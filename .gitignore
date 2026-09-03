@@ -1,0 +1,34 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# Testing and coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.tox/
+
+# Environment configuration files
+.env
+.env.local
+
+# OpenStack credentials - avoid committing sensitive configuration
+clouds.yaml
+clouds-public.yaml
+
+# VS Code local settings
+.vscode/settings.json
+.vscode/launch.json
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
