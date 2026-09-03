@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 *.so
 .Python
+*.egg-info/
 
 # Testing and coverage reports
 .pytest_cache/
