@@ -69,6 +69,26 @@ def usable_openstack_resources(scenario_context):
 
 @when("the consumer runs the virtual machine lifecycle", target_fixture="result")
 def run_consumer_vm_lifecycle(scenario_context) -> WorkflowRunResult:
+    return _run_consumer_vm_lifecycle(scenario_context)
+
+
+@when(
+    "the consumer provisions a workload on the requested network",
+    target_fixture="result",
+)
+def run_consumer_network_attachment_lifecycle(
+    scenario_context,
+) -> WorkflowRunResult:
+    return _run_consumer_vm_lifecycle(
+        scenario_context,
+        verify_network_attachment=True,
+    )
+
+
+def _run_consumer_vm_lifecycle(
+    scenario_context,
+    verify_network_attachment: bool = False,
+) -> WorkflowRunResult:
     environment = Environment(
         cloud=scenario_context["cloud_name"],
         region=getattr(scenario_context["connection"].config, "region_name", None)
@@ -82,9 +102,15 @@ def run_consumer_vm_lifecycle(scenario_context) -> WorkflowRunResult:
         image_id=scenario_context["image_id"],
         flavor_id=scenario_context["flavor_id"],
         network_id=scenario_context["network_id"],
+        verify_network_attachment=verify_network_attachment,
     )
 
 
 @then("the lifecycle should succeed")
 def lifecycle_succeeded(result: WorkflowRunResult):
+    assert result.status is ExecutionStatus.SUCCESS, result.error_message
+
+
+@then("the workload should receive an address on that network and be cleaned up")
+def network_attachment_succeeded(result: WorkflowRunResult):
     assert result.status is ExecutionStatus.SUCCESS, result.error_message
