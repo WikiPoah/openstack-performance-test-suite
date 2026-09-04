@@ -14,4 +14,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-bdd",
+]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that require an explicitly enabled live OpenStack environment",
 ]

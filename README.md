@@ -37,6 +37,8 @@ The repository currently provides:
 - `Environment` and `WorkflowRunResult` models for deployment metadata,
   functional outcomes, durations, and failure context.
 - The `vm.lifecycle` workflow for one-server provisioning and cleanup.
+- One consumer-facing `pytest-bdd` scenario that exercises the complete VM
+  lifecycle against an explicitly enabled live OpenStack environment.
 - Unit tests that mock the SDK boundary and do not require a live cloud.
 
 ### VM Lifecycle
@@ -78,8 +80,30 @@ Run the current unit suite with:
 .venv/bin/python -m pytest -q
 ```
 
-The unit tests use mocks, so they do not require OpenStack credentials or a
-live OpenStack environment.
+This normal test command excludes tests marked `integration`, so it does not
+create resources in a live OpenStack environment. The unit tests use mocks and
+do not require OpenStack credentials.
+
+To run the live BDD VM lifecycle scenario, explicitly select integration tests
+and opt in to live access:
+
+```bash
+OPENSTACK_PERF_RUN_LIVE=1 \
+OPENSTACK_PERF_CLOUD=my-cloud \
+OPENSTACK_PERF_IMAGE=my-image \
+OPENSTACK_PERF_FLAVOR=my-flavor \
+OPENSTACK_PERF_NETWORK=my-network \
+.venv/bin/python -m pytest tests/integration/test_vm_lifecycle_bdd.py -m integration -q
+```
+
+Both explicit integration-test selection and `OPENSTACK_PERF_RUN_LIVE=1` are
+required. The remaining variables identify the externally configured cloud and
+the image, flavor, and network by name. The scenario resolves those names to
+resource IDs before calling the existing VM lifecycle workflow.
+
+Test-created servers use an `openstack-perf-bdd-` name prefix for clear
+ownership. Cleanup targets only the exact server created by the workflow; the
+suite does not perform broad name-based cleanup.
 
 ## OpenStack Configuration
 
@@ -89,13 +113,15 @@ configuration supported by `openstacksdk`; credential values must never be
 committed to this repository.
 
 The application code does not hard-code a particular cloud, project, image,
-flavor, network, or infrastructure environment.
+flavor, network, or infrastructure environment. The live BDD scenario reads
+only configuration names from environment variables; authentication details
+remain in the external OpenStack configuration.
 
 ## Roadmap
 
 Planned work, not current functionality, includes:
 
-- BDD scenarios for runnable regression workflows.
+- Broader BDD scenarios for consumer-facing regression workflows.
 - Additional consumer workflows covering Keystone, Nova, Neutron, and Glance.
 - Machine-readable result output and baseline/regression comparison.
 - Product-oriented, read-only checks for supported applications.
