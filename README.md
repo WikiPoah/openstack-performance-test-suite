@@ -49,8 +49,8 @@ or JMeter are outside the current scope rather than alternatives this suite
 attempts to replace.
 
 See [Controlled benchmark evidence](docs/benchmark-results.md) for the recorded
-initial baseline/candidate comparison and the product-performance coverage gap
-it exposed.
+baseline/candidate experiments, the product-performance coverage gaps they
+exposed, and the final generalized page-delivery result.
 
 ## Testing Approach
 

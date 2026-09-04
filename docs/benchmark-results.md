@@ -269,7 +269,7 @@ statistics, artifact, or comparator defect.
 
 ## Systematic page-delivery coverage
 
-The next remediation applies the same bounded page-delivery mechanism across
+The second remediation applied the same bounded page-delivery mechanism across
 the application's six already-approved HTML surfaces:
 
 - `wordpress.home`
@@ -279,22 +279,115 @@ the application's six already-approved HTML surfaces:
 - `static.team`
 - `static.contact`
 
-This selection is derived from the existing consumer contract rather than a
-known affected asset URL. It retains GET-only direct-resource discovery,
+This selection was derived from the existing consumer contract rather than a
+known affected asset URL. It retained GET-only direct-resource discovery,
 same-origin and exact-destination enforcement, a frozen manifest, sequential
-timing, and bounded response sizes. Static pages receive a bounded allowance of
-64 direct resources while the WordPress home-page limit remains 32.
+timing, and bounded response sizes. Static pages received a bounded allowance
+of 64 direct resources while the WordPress home-page limit remained 32.
 
-Controlled proof of this generalized coverage is still pending. The required
-sequence is:
+## Final controlled experiment
 
-1. Complete non-live implementation review.
-2. Restore the known-good Release 1.0 environment.
-3. Capture and preserve a new baseline containing all six page-delivery observations.
-4. Redeploy unchanged Release 2.1.
-5. Run one candidate with the exact same improved suite and configuration.
-6. Record the automatic comparison and whether it detects the previously
-   missed performance regression.
+The final experiment tested a controlled OpenStack-backed environment together
+with its application surfaces. Release 1.0 was the known-good baseline and
+Release 2.1 the changed candidate. Both runs used commit
+`58f672e0e2fd901a23b445bd707b2ecf152778b6`, configuration
+`devstack-release-regression`, and the same six page-delivery targets and
+policies. This controls changes in the suite itself so the comparison reflects
+the tested release environments.
 
-No timing from the original baseline will be used as evidence for an
-observation that it did not contain.
+The test exists to answer two distinct questions. Functional verdicts show
+whether required consumer workflows still work. Performance verdicts show
+whether successful workflows remain within their pre-established allowance
+relative to the known-good baseline.
+
+### Evidence identity
+
+| Role | Application | Run ID | Artifact basename | SHA-256 | Overall result |
+|---|---|---|---|---|---|
+| Baseline | 1.0 | `13add09e-4873-43d8-8130-f6e0ab410c08` | `devstack-release-regression-baseline-20260904T211930Z-13add09e-4873-43d8-8130-f6e0ab410c08.json` | `652492d71a8ecff1df24cc60196ab53dfe56ee1b70e8164237781dddfe1e8f56` | PASS |
+| Candidate | 2.1 | `a5beee69-a933-4425-8f92-6577a1894010` | `devstack-release-regression-candidate-20260904T213407Z-a5beee69-a933-4425-8f92-6577a1894010.json` | `9f70e2450c1969c1decc753d92e40045b12f60892920514a922e243bb9edf13a` | FUNCTIONAL_FAILURE |
+
+The raw artifacts remain outside Git. The Release 1.0 baseline passed every
+configured observation. Its three VM lifecycle samples ran sequentially and
+cleanup was confirmed for every completed execution.
+
+### Page-delivery baseline
+
+| Target | Samples | p50 | p95 | Functional |
+|---|---:|---:|---:|---|
+| `wordpress.home` | 10 | 0.180 s | 0.247 s | PASS |
+| `static.home` | 10 | 0.014 s | 0.038 s | PASS |
+| `static.about` | 10 | 0.013 s | 0.014 s | PASS |
+| `static.products` | 10 | 0.016 s | 0.042 s | PASS |
+| `static.team` | 10 | 0.013 s | 0.058 s | PASS |
+| `static.contact` | 10 | 0.013 s | 0.061 s | PASS |
+
+Page delivery is a bounded deterministic proxy. Each observation retrieves the
+HTML and its frozen set of directly referenced, approved same-origin images,
+scripts, and stylesheets sequentially. It measures network and body-read time;
+it is not browser rendering, interactivity, or a Core Web Vitals measurement.
+
+### Independently detected performance regression
+
+`product.page_delivery / static.home` remained functionally successful in the
+candidate but exceeded its performance allowance:
+
+| Metric | Baseline | Candidate | Reported delta | Verdict |
+|---|---:|---:|---:|---|
+| p50 | 0.014 s | 0.281 s | +0.267 s (+1919.7%) | PERFORMANCE_REGRESSION |
+| p95 | 0.038 s | 0.324 s | +0.287 s (+760.2%) | PERFORMANCE_REGRESSION |
+
+The policy was established before the Release 2.1 candidate was measured:
+
+- minimum successful samples: 10;
+- p50 relative tolerance: 0.50;
+- p50 absolute allowance: 0.25 seconds;
+- p95 relative tolerance: 0.50;
+- p95 absolute allowance: 0.50 seconds.
+
+The comparator uses the larger relative or absolute allowance and reports a
+regression only when the candidate increase exceeds it. These values were not
+tuned after observing Release 2.1. The key result is that the page continued to
+work while its baseline-relative delivery performance was independently
+rejected.
+
+`wordpress.home` remained functional and within its performance policy, with
+p50 increasing 8.9% and p95 decreasing 1.4%. Page-delivery observations that
+failed functionally were correctly marked performance `NOT_EVALUATED`; failed
+functional evidence was not turned into a timing conclusion.
+
+### Functional, platform, and tier evidence
+
+The candidate also detected multiple consumer-facing static-site and Tomcat
+HTTP failures and therefore received overall `FUNCTIONAL_FAILURE`. The backend
+Tomcat listener remained reachable while the public Tomcat HTTP observations
+failed. This establishes a difference between listener reachability and
+consumer-facing behavior without asserting a root cause.
+
+OpenStack platform evidence remained healthy: identity discovery, image
+discovery, and the VM network-attachment lifecycle all passed their performance
+comparisons. The candidate VM p50 changed by -1.1% and p95 by -12.3%. All three
+VM samples passed, with network verification and cleanup confirmed for every
+completed execution.
+
+Read-only observations ran before VM mutation, VM samples were sequential, and
+VM cleanup retained exact suite ownership. Live runs required explicit CLI and
+environment authorization; ordinary pytest remained non-live.
+
+### Engineering conclusion
+
+The experiment history is intentionally retained. The original suite detected
+functional failures but lacked product performance coverage. The first
+remediation measured one lightweight home page correctly but remained too
+narrow. Generalizing the same bounded measurement across the application's
+already-approved consumer pages produced fresh, comparable evidence and found
+a performance regression without selecting a candidate-specific URL or
+changing the comparator.
+
+This is evidence-driven refinement rather than a claim that the first design
+was complete. It demonstrates why both functional and baseline-relative
+performance verdicts are required for a defensible release decision.
+
+At commit `58f672e`, deterministic verification comprised 434 passing unit
+tests and 435 passing default non-live tests with 7 integration tests
+deselected. Offline configuration validation also passed.
