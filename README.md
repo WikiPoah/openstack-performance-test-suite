@@ -25,8 +25,8 @@ The suite is designed around consumer-facing workflows that combine:
 - Cleanup as part of correctness, so test resources do not accumulate.
 - External environment configuration rather than hard-coded cloud details.
 
-The repository currently contains the first implemented workflow described
-below. Broader measurement and comparison capabilities are planned.
+The repository contains focused consumer workflows together with result,
+statistics, artifact, and baseline-comparison foundations.
 
 ## Current Capabilities
 
@@ -37,10 +37,38 @@ The repository currently provides:
 - `Environment` and `WorkflowRunResult` models for deployment metadata,
   functional outcomes, durations, and failure context.
 - The `vm.lifecycle` workflow for one-server provisioning and cleanup.
-- Two consumer-facing `pytest-bdd` scenarios that verify a consumer can:
+- Read-only checks for authenticated project scope, required service endpoint
+  discovery, and expected boot-image metadata.
+- A read-only infrastructure check for one configured critical server and its
+  exact network attachment.
+- Immutable regression observations, deterministic p50/p95 statistics,
+  schema-versioned JSON artifacts, and configurable baseline comparison.
+- Four consumer-facing `pytest-bdd` scenarios that verify a consumer can:
   - Provision and remove a virtual machine.
   - Provision a workload with an address on the requested network.
+  - Discover required services and a usable boot image.
+  - Confirm configured critical infrastructure remains correctly attached.
 - Unit tests that mock the SDK boundary and do not require a live cloud.
+
+### Platform Discovery
+
+The platform-discovery check uses a fresh SDK connection for every sample. It
+measures authentication, confirmation of the expected project scope, and
+resolution of the compute, network, and image service endpoints. Returned
+authentication tokens are neither retained nor serialized.
+
+The boot-image check uses an already authenticated connection and measures
+image lookup followed by authoritative metadata retrieval. It requires the
+configured image to be active and to expose a usable ID, matching name, image
+formats, and positive size. It does not download or modify image data.
+
+### Read-only Infrastructure State
+
+The infrastructure check validates one explicitly configured existing server.
+It confirms the authenticated project, active server state, and exactly one
+port matching the server ID, configured network, and expected fixed IP. This
+check performs no create, update, or delete operations and is intended for use
+with a separately configured read-only cloud account.
 
 ### VM Lifecycle
 
@@ -110,6 +138,15 @@ required. The remaining variables identify the externally configured cloud and
 the image, flavor, and network by name. The scenario resolves those names to
 resource IDs before calling the existing VM lifecycle workflow.
 
+The discovery and read-only infrastructure scenarios use the same explicit
+live opt-in. Their resource names are supplied through
+`OPENSTACK_PERF_PROJECT`, `OPENSTACK_PERF_IMAGE`,
+`OPENSTACK_PERF_CORP_CLOUD`, `OPENSTACK_PERF_CORP_PROJECT`,
+`OPENSTACK_PERF_CORP_SERVER`, `OPENSTACK_PERF_CORP_NETWORK`, and
+`OPENSTACK_PERF_CORP_FIXED_IP`. The infrastructure cloud must be configured
+externally as `devstack-corp-ro` with read-only access to the expected project;
+the infrastructure scenario rejects any other cloud alias.
+
 Test-created servers use an `openstack-perf-bdd-` name prefix for clear
 ownership. Cleanup targets only the exact server created by the workflow; the
 suite does not perform broad name-based cleanup. Automatically managed Neutron
@@ -132,8 +169,6 @@ remain in the external OpenStack configuration.
 Planned work, not current functionality, includes:
 
 - Broader BDD scenarios for consumer-facing regression workflows.
-- Additional consumer workflows covering Keystone, Nova, Neutron, and Glance.
-- Machine-readable result output and baseline/regression comparison.
 - Product-oriented, read-only checks for supported applications.
 - Repeated sampling and concurrency where they provide useful evidence.
 
