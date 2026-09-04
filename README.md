@@ -41,13 +41,17 @@ The repository currently provides:
   discovery, and expected boot-image metadata.
 - A read-only infrastructure check for one configured critical server and its
   exact network attachment.
+- Read-only product checks for the supported WordPress, static-site, nginx,
+  Tomcat, and backend-listener contracts.
 - Immutable regression observations, deterministic p50/p95 statistics,
   schema-versioned JSON artifacts, and configurable baseline comparison.
-- Four consumer-facing `pytest-bdd` scenarios that verify a consumer can:
+- Six consumer-facing `pytest-bdd` scenarios that verify a consumer can:
   - Provision and remove a virtual machine.
   - Provision a workload with an address on the requested network.
   - Discover required services and a usable boot image.
   - Confirm configured critical infrastructure remains correctly attached.
+  - Use the supported corporate web application paths.
+  - Reach the application services across their public and backend tiers.
 - Unit tests that mock the SDK boundary and do not require a live cloud.
 
 ### Platform Discovery
@@ -99,6 +103,23 @@ exact server ID belongs to the requested network and has a fixed IP. After the
 VM is deleted, it confirms that the same automatically managed port also
 disappears.
 
+### Product Availability
+
+The product checks issue bounded, read-only HTTP `GET` requests to explicitly
+configured frontend and Tomcat base URLs. They validate the supported
+WordPress pages and posts API, the five approved static-site paths, nginx
+status output, and selected Tomcat pages. The expected WordPress release title
+and application release are supplied externally rather than inferred from
+page content. HTTP observations use one untimed warm-up followed by ten timed
+requests, limit responses to 2 MiB, and reject cross-origin redirects.
+
+Backend availability is checked through the approved bastion using one
+non-interactive system SSH invocation. The fixed remote check only opens and
+closes TCP connections to the four documented backend listeners; it sends no
+application payload, performs no authentication, and does not modify those
+services. Host-key verification remains enabled through the user's existing
+SSH configuration.
+
 ## Installation
 
 The project requires Python 3.11 or newer. Create a virtual environment and
@@ -147,6 +168,15 @@ live opt-in. Their resource names are supplied through
 externally as `devstack-corp-ro` with read-only access to the expected project;
 the infrastructure scenario rejects any other cloud alias.
 
+The product scenarios also require the explicit live opt-in. Their non-secret
+inputs are supplied through `OPENSTACK_PERF_PRODUCT_BASE_URL`,
+`OPENSTACK_PERF_TOMCAT_BASE_URL`,
+`OPENSTACK_PERF_WORDPRESS_RELEASE_TITLE`,
+`OPENSTACK_PERF_APPLICATION_RELEASE`, and
+`OPENSTACK_PERF_PRODUCT_BASTION`. The backend scenario accepts only the
+approved `wiki@172.24.4.20` bastion. Product checks are read-only: they use
+HTTP `GET` and TCP connect-and-close operations only.
+
 Test-created servers use an `openstack-perf-bdd-` name prefix for clear
 ownership. Cleanup targets only the exact server created by the workflow; the
 suite does not perform broad name-based cleanup. Automatically managed Neutron
@@ -169,7 +199,6 @@ remain in the external OpenStack configuration.
 Planned work, not current functionality, includes:
 
 - Broader BDD scenarios for consumer-facing regression workflows.
-- Product-oriented, read-only checks for supported applications.
 - Repeated sampling and concurrency where they provide useful evidence.
 
 ## Design Principles
