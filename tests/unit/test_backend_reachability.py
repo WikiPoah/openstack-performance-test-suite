@@ -23,7 +23,7 @@ from openstack_perf.results import (
 
 def _targets():
     return (
-        BackendTarget("backend.database", "MariaDB listener", "10.20.1.10", 3306),
+        BackendTarget("backend.mariadb", "MariaDB listener", "10.20.1.10", 3306),
         BackendTarget("backend.apache", "Apache listener", "10.20.1.20", 80),
         BackendTarget("backend.tomcat", "Tomcat listener", "10.20.1.30", 8080),
         BackendTarget("backend.nginx", "nginx listener", "10.20.1.40", 80),
@@ -76,7 +76,7 @@ def test_backend_probe_uses_one_safe_ssh_process_and_no_payload_protocol():
 def test_backend_failure_is_one_failed_observation_for_exact_target():
     results = _successful_results()
     results[0] = {
-        "target_id": "backend.database",
+        "target_id": "backend.mariadb",
         "successful": False,
         "duration_seconds": 0.25,
         "error_type": "TimeoutError",
@@ -132,8 +132,8 @@ def test_nonzero_ssh_exit_fails_every_target_without_exposing_output():
         "not JSON secret",
         "[]",
         json.dumps([{"target_id": "unapproved", "successful": True, "duration_seconds": 1.0}] * 4),
-        json.dumps([{"target_id": "backend.database", "successful": "yes", "duration_seconds": 1.0}] * 4),
-        json.dumps([{"target_id": "backend.database", "successful": True, "duration_seconds": float("nan")}] * 4),
+        json.dumps([{"target_id": "backend.mariadb", "successful": "yes", "duration_seconds": 1.0}] * 4),
+        json.dumps([{"target_id": "backend.mariadb", "successful": True, "duration_seconds": float("nan")}] * 4),
     ],
 )
 def test_malformed_remote_output_fails_all_targets_without_retaining_output(output):
@@ -149,12 +149,12 @@ def test_malformed_remote_output_fails_all_targets_without_retaining_output(outp
     "replacement",
     [
         {
-            "target_id": "backend.database",
+            "target_id": "backend.mariadb",
             "successful": True,
             "duration_seconds": 0.1,
             "unexpected": "field",
         },
-        {"target_id": "backend.database", "successful": True},
+        {"target_id": "backend.mariadb", "successful": True},
     ],
 )
 def test_backend_result_rejects_extra_or_missing_fields(replacement):

@@ -84,6 +84,7 @@ def observe_corporate_web_application(
     expected_release_title: str,
     sample_count: int = DEFAULT_SAMPLE_COUNT,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    maximum_body_bytes: int = MAX_RESPONSE_BYTES,
     opener=None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> tuple[ScenarioObservation, ...]:
@@ -91,6 +92,7 @@ def observe_corporate_web_application(
     base_url = _validated_base_url(frontend_base_url)
     if not expected_release_title:
         raise ValueError("expected_release_title must be non-empty")
+    _require_body_limit(maximum_body_bytes)
     required_paths = (
         "/site/",
         "/site/about.html",
@@ -184,6 +186,7 @@ def observe_corporate_web_application(
             approved_urls=approved_urls,
             sample_count=sample_count,
             timeout_seconds=timeout_seconds,
+            maximum_body_bytes=maximum_body_bytes,
             opener=client,
             clock=clock,
         )
@@ -197,12 +200,14 @@ def observe_service_http_endpoints(
     *,
     sample_count: int = DEFAULT_SAMPLE_COUNT,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    maximum_body_bytes: int = MAX_RESPONSE_BYTES,
     opener=None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> tuple[ScenarioObservation, ...]:
     """Observe the configured nginx and Tomcat read-only HTTP endpoints."""
     frontend = _validated_base_url(frontend_base_url)
     tomcat = _validated_base_url(tomcat_base_url)
+    _require_body_limit(maximum_body_bytes)
     targets = (
         _text_target(
             "product.service_http", "nginx.status", "nginx status",
@@ -233,6 +238,7 @@ def observe_service_http_endpoints(
             approved_urls=approved_urls,
             sample_count=sample_count,
             timeout_seconds=timeout_seconds,
+            maximum_body_bytes=maximum_body_bytes,
             opener=client,
             clock=clock,
         )
@@ -251,7 +257,8 @@ def _text_target(scenario_id, target_id, name, base_url, path, marker):
 
 
 def _observe_target(
-    target, *, approved_urls, sample_count, timeout_seconds, opener, clock
+    target, *, approved_urls, sample_count, timeout_seconds,
+    maximum_body_bytes, opener, clock
 ):
     _require_positive_integer(sample_count, "sample_count")
     _require_http_timeout(timeout_seconds)
@@ -261,7 +268,7 @@ def _observe_target(
 
     try:
         status, final_url, content_type, body, _ = _fetch(
-            client, target.url, timeout_seconds, MAX_RESPONSE_BYTES, None
+            client, target.url, timeout_seconds, maximum_body_bytes, None
         )
         _validate_response(
             target,
@@ -281,7 +288,7 @@ def _observe_target(
     for sequence in range(1, sample_count + 1):
         try:
             status, final_url, content_type, body, duration = _fetch(
-                client, target.url, timeout_seconds, MAX_RESPONSE_BYTES, clock
+                client, target.url, timeout_seconds, maximum_body_bytes, clock
             )
         except Exception as exc:
             error = product_failure_message(f"{target.target_id} request", exc)
@@ -513,4 +520,13 @@ def _require_http_timeout(value):
     if not math.isfinite(value) or value <= 0 or value > DEFAULT_TIMEOUT_SECONDS:
         raise ValueError(
             "timeout_seconds must be finite, positive, and at most 10 seconds"
+        )
+
+
+def _require_body_limit(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("maximum_body_bytes must be an integer")
+    if value < 1 or value > MAX_RESPONSE_BYTES:
+        raise ValueError(
+            "maximum_body_bytes must be between 1 and 2097152"
         )

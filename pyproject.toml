@@ -11,6 +11,9 @@ dependencies = [
     "openstacksdk",
 ]
 
+[project.scripts]
+openstack-perf = "openstack_perf.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest",

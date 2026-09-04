@@ -98,7 +98,7 @@ def check_application_services(application_service_context):
         application_service_context["bastion"],
         (
             BackendTarget(
-                "backend.database", "MariaDB listener", "10.20.1.10", 3306
+                "backend.mariadb", "MariaDB listener", "10.20.1.10", 3306
             ),
             BackendTarget(
                 "backend.apache", "Apache listener", "10.20.1.20", 80

@@ -417,3 +417,69 @@ def test_comparison_requires_correct_run_roles():
 
     with pytest.raises(ValueError, match="baseline role"):
         compare_runs(baseline, candidate, (_policy(),))
+
+
+def test_functional_only_observation_passes_without_performance_policy():
+    baseline = _run(RunRole.BASELINE, "baseline", [_observation()])
+    candidate = _run(RunRole.CANDIDATE, "candidate", [_observation()])
+
+    comparison = compare_runs(
+        baseline, candidate, (), (("vm.lifecycle", "default"),)
+    )
+
+    assert comparison.verdict is OverallVerdict.PASS
+    assert comparison.observations[0].performance_verdict is (
+        PerformanceVerdict.NOT_EVALUATED
+    )
+
+
+def test_functional_only_candidate_failure_dominates():
+    baseline = _run(RunRole.BASELINE, "baseline", [_observation()])
+    candidate = _run(
+        RunRole.CANDIDATE,
+        "candidate",
+        [_observation(verdict=FunctionalVerdict.FAILURE)],
+    )
+
+    comparison = compare_runs(
+        baseline, candidate, (), (("vm.lifecycle", "default"),)
+    )
+
+    assert comparison.verdict is OverallVerdict.FUNCTIONAL_FAILURE
+
+
+def test_functional_only_missing_or_invalid_baseline_is_insufficient():
+    candidate = _run(RunRole.CANDIDATE, "candidate", [_observation()])
+    empty_baseline_observation = _observation(
+        scenario_id="other", target_id="other"
+    )
+    missing = compare_runs(
+        _run(RunRole.BASELINE, "baseline", [empty_baseline_observation]),
+        candidate,
+        (),
+        (("vm.lifecycle", "default"),),
+    )
+    invalid = compare_runs(
+        _run(
+            RunRole.BASELINE,
+            "baseline",
+            [_observation(verdict=FunctionalVerdict.FAILURE)],
+        ),
+        candidate,
+        (),
+        (("vm.lifecycle", "default"),),
+    )
+
+    assert missing.verdict is OverallVerdict.INSUFFICIENT_EVIDENCE
+    assert invalid.verdict is OverallVerdict.INSUFFICIENT_EVIDENCE
+
+
+def test_comparison_rejects_duplicate_or_overlapping_functional_only_keys():
+    baseline = _run(RunRole.BASELINE, "baseline", [_observation()])
+    candidate = _run(RunRole.CANDIDATE, "candidate", [_observation()])
+    key = ("vm.lifecycle", "default")
+
+    with pytest.raises(ValueError, match="functional-only keys must be unique"):
+        compare_runs(baseline, candidate, (), (key, key))
+    with pytest.raises(ValueError, match="both performance and functional-only"):
+        compare_runs(baseline, candidate, (_policy(),), (key,))

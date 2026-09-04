@@ -79,10 +79,16 @@ class RunMetadata:
     started_at: str
     completed_at: str
     clean_snapshot: CleanSnapshotStatus
+    configuration_name: str | None = None
 
     def __post_init__(self):
         if not self.run_id or not self.started_at or not self.completed_at:
             raise ValueError("run metadata fields must be non-empty")
+        if self.configuration_name is not None and not (
+            isinstance(self.configuration_name, str)
+            and self.configuration_name.strip()
+        ):
+            raise ValueError("configuration_name must be a non-empty string")
         started_at = _parse_timestamp(self.started_at, "started_at")
         completed_at = _parse_timestamp(self.completed_at, "completed_at")
         if completed_at < started_at:
