@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import ipaddress
 import math
+import posixpath
 from pathlib import Path
 import re
 import tomllib
@@ -16,6 +17,7 @@ from openstack_perf.results import CleanSnapshotStatus
 
 CONFIG_SCHEMA_VERSION = 1
 MAX_CONFIGURATION_SLUG_LENGTH = 96
+MAX_PAGE_DELIVERY_RESOURCES = 64
 COMPARISON_MODES = {"performance", "functional_only"}
 SECRET_KEY_PARTS = {
     "authorization",
@@ -67,6 +69,14 @@ class BackendConfig:
 
 
 @dataclass(frozen=True)
+class PageDeliveryTargetConfig:
+    target_id: str
+    path: str
+    name: str
+    maximum_resources: int
+
+
+@dataclass(frozen=True)
 class ProductConfig:
     base_url: str
     http_timeout_seconds: float
@@ -75,6 +85,13 @@ class ProductConfig:
     expected_release_title: str | None = None
     bastion: str | None = None
     backends: tuple[BackendConfig, ...] = ()
+    page_delivery_targets: tuple[PageDeliveryTargetConfig, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "backends", tuple(self.backends))
+        object.__setattr__(
+            self, "page_delivery_targets", tuple(self.page_delivery_targets)
+        )
 
 
 @dataclass(frozen=True)
@@ -100,6 +117,7 @@ class ScenarioSet:
     boot_image: ScenarioConfig
     infrastructure_state: ScenarioConfig
     web_application: ScenarioConfig
+    page_delivery: ScenarioConfig
     application_services: ScenarioConfig
     vm_lifecycle: VmScenarioConfig
 
@@ -155,6 +173,7 @@ def _parse_config(document) -> RuntimeConfig:
             scenarios.boot_image,
             scenarios.infrastructure_state,
             scenarios.web_application,
+            scenarios.page_delivery,
             scenarios.application_services,
             scenarios.vm_lifecycle,
         )
@@ -164,6 +183,7 @@ def _parse_config(document) -> RuntimeConfig:
     needs_corp = scenarios.infrastructure_state.enabled
     needs_product = (
         scenarios.web_application.enabled
+        or scenarios.page_delivery.enabled
         or scenarios.application_services.enabled
     )
     consumer = _optional_section(root, "consumer", _parse_consumer, True)
@@ -174,6 +194,7 @@ def _parse_config(document) -> RuntimeConfig:
         lambda data: _parse_product(
             data,
             needs_web=scenarios.web_application.enabled,
+            needs_page_delivery=scenarios.page_delivery.enabled,
             needs_services=scenarios.application_services.enabled,
         ),
         needs_product,
@@ -303,11 +324,11 @@ def _parse_corp(data):
     )
 
 
-def _parse_product(data, *, needs_web, needs_services):
+def _parse_product(data, *, needs_web, needs_page_delivery, needs_services):
     data = _table(
         data,
         "product",
-        {"base_url", "tomcat_base_url", "expected_release_title", "bastion", "http_timeout_seconds", "maximum_body_bytes", "backends"},
+        {"base_url", "tomcat_base_url", "expected_release_title", "bastion", "http_timeout_seconds", "maximum_body_bytes", "backends", "page_delivery_targets"},
     )
     base_url = _safe_url(_nonempty(data, "base_url"), "product.base_url")
     tomcat_url = _optional_url(data, "tomcat_base_url")
@@ -332,6 +353,28 @@ def _parse_product(data, *, needs_web, needs_services):
     ids = [backend.target_id for backend in backends]
     if len(ids) != len(set(ids)):
         raise ConfigurationError("product backend target IDs must be unique")
+    page_targets_data = data.get("page_delivery_targets", [])
+    if not isinstance(page_targets_data, list):
+        raise ConfigurationError(
+            "product.page_delivery_targets must be an array of tables"
+        )
+    page_targets = tuple(
+        _parse_page_delivery_target(item) for item in page_targets_data
+    )
+    if needs_page_delivery and not page_targets:
+        raise ConfigurationError(
+            "product.page_delivery_targets must not be empty"
+        )
+    target_ids = [target.target_id for target in page_targets]
+    if len(target_ids) != len(set(target_ids)):
+        raise ConfigurationError(
+            "page-delivery target IDs must be unique"
+        )
+    normalized_paths = [_normalized_page_path(target.path) for target in page_targets]
+    if len(normalized_paths) != len(set(normalized_paths)):
+        raise ConfigurationError(
+            "page-delivery target paths must be unique"
+        )
     expected_title = _optional_nonempty(data, "expected_release_title")
     if needs_web and expected_title is None:
         raise ConfigurationError(
@@ -348,6 +391,7 @@ def _parse_product(data, *, needs_web, needs_services):
         expected_title,
         bastion,
         backends,
+        page_targets,
     )
 
 
@@ -364,12 +408,69 @@ def _parse_backend(data):
     return BackendConfig(target_id, _nonempty(data, "name"), host, port)
 
 
+def _parse_page_delivery_target(data):
+    data = _table(
+        data,
+        "product page-delivery target",
+        {"target_id", "path", "name", "maximum_resources"},
+    )
+    target_id = _nonempty(data, "target_id")
+    if not re.fullmatch(r"[a-z][a-z0-9_.-]*", target_id):
+        raise ConfigurationError(
+            "page-delivery target_id must be a stable lowercase ID"
+        )
+    path = _page_path(_nonempty(data, "path"))
+    maximum_resources = _integer(data, "maximum_resources")
+    if not 1 <= maximum_resources <= MAX_PAGE_DELIVERY_RESOURCES:
+        raise ConfigurationError(
+            "page-delivery maximum_resources must be between 1 and 64"
+        )
+    return PageDeliveryTargetConfig(
+        target_id,
+        path,
+        _nonempty(data, "name"),
+        maximum_resources,
+    )
+
+
+def _page_path(value):
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or not value.startswith("/")
+        or value.startswith("//")
+        or "//" in value
+        or "\\" in value
+        or "%" in value
+        or any(character.isspace() or ord(character) < 32 for character in value)
+    ):
+        raise ConfigurationError(
+            "page-delivery path must be an absolute-path reference without "
+            "authority, query, fragment, credentials, or whitespace"
+        )
+    segments = parsed.path.split("/")
+    if any(segment in {".", ".."} for segment in segments):
+        raise ConfigurationError(
+            "page-delivery path must not contain dot segments"
+        )
+    return value
+
+
+def _normalized_page_path(value):
+    normalized = posixpath.normpath(value)
+    return "/" if normalized == "/" else normalized.rstrip("/")
+
+
 def _parse_scenarios(data):
     names = {
         "service_discovery",
         "boot_image",
         "infrastructure_state",
         "web_application",
+        "page_delivery",
         "application_services",
         "vm_lifecycle",
     }
@@ -382,6 +483,7 @@ def _parse_scenarios(data):
         boot_image=_parse_sampled_scenario(data["boot_image"], "boot_image"),
         infrastructure_state=_parse_basic_scenario(data["infrastructure_state"], "infrastructure_state"),
         web_application=_parse_sampled_scenario(data["web_application"], "web_application"),
+        page_delivery=_parse_sampled_scenario(data["page_delivery"], "page_delivery"),
         application_services=_parse_sampled_scenario(data["application_services"], "application_services"),
         vm_lifecycle=_parse_vm_scenario(data["vm_lifecycle"]),
     )
@@ -485,6 +587,13 @@ def _expected_comparison_modes(config):
         add((("infrastructure.server_attachment", corp.server),), config.scenarios.infrastructure_state)
     if product:
         add(
+            tuple(
+                ("product.page_delivery", target.target_id)
+                for target in product.page_delivery_targets
+            ),
+            config.scenarios.page_delivery,
+        )
+        add(
             tuple(("product.wordpress", target) for target in (
                 "wordpress.home", "wordpress.search.release", "wordpress.rest.posts", "wordpress.login"
             ))
@@ -548,6 +657,14 @@ def _expected_sample_limits(config):
             )),
         )
         add(web_targets, config.scenarios.web_application.samples)
+    if product and config.scenarios.page_delivery.enabled:
+        add(
+            tuple(
+                ("product.page_delivery", target.target_id)
+                for target in product.page_delivery_targets
+            ),
+            config.scenarios.page_delivery.samples,
+        )
     if product and config.scenarios.application_services.enabled:
         add(
             tuple(

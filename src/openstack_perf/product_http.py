@@ -3,9 +3,10 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 import json
 import math
+import re
 import time
 from urllib.error import HTTPError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from openstack_perf.results import (
@@ -20,6 +21,9 @@ from openstack_perf.statistics import calculate_timing_statistics
 DEFAULT_SAMPLE_COUNT = 10
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_PAGE_RESOURCES = 32
+MAX_PAGE_RESOURCE_LIMIT = 64
+MAX_PAGE_DELIVERY_BYTES = 16 * 1024 * 1024
 
 
 class ProductValidationError(ValueError):
@@ -76,6 +80,25 @@ class _LinkParser(HTMLParser):
             href = dict(attrs).get("href")
             if href:
                 self.links.append(href)
+
+
+class _PageResourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.references: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        tag = tag.lower()
+        reference = None
+        if tag in {"img", "script"}:
+            reference = attributes.get("src")
+        elif tag == "link" and "stylesheet" in {
+            item.lower() for item in attributes.get("rel", "").split()
+        }:
+            reference = attributes.get("href")
+        if reference:
+            self.references.append(reference)
 
 
 def observe_corporate_web_application(
@@ -244,6 +267,236 @@ def observe_service_http_endpoints(
         )
         for target in targets
     )
+
+
+def observe_page_delivery(
+    frontend_base_url: str,
+    *,
+    target_id: str = "wordpress.home",
+    path: str = "/",
+    name: str = "WordPress home page delivery",
+    maximum_resources: int = MAX_PAGE_RESOURCES,
+    sample_count: int = DEFAULT_SAMPLE_COUNT,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    maximum_body_bytes: int = MAX_RESPONSE_BYTES,
+    opener=None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> ScenarioObservation:
+    """Observe delivery of one configured page and its direct resources."""
+    if not isinstance(target_id, str) or not re.fullmatch(
+        r"[a-z][a-z0-9_.-]*", target_id
+    ):
+        raise ValueError("target_id must be a stable lowercase ID")
+    path = _validated_page_path(path)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be non-empty")
+    _require_page_resource_limit(maximum_resources)
+    _require_positive_integer(sample_count, "sample_count")
+    _require_http_timeout(timeout_seconds)
+    _require_body_limit(maximum_body_bytes)
+    page_url = _target_url(_validated_base_url(frontend_base_url), path)
+    target = _HttpTarget(
+        "product.page_delivery",
+        target_id,
+        name,
+        page_url,
+        {},
+    )
+    aggregate = {"delivery": True}
+
+    try:
+        warmup_client = opener or _build_product_opener((page_url,))
+        status, final_url, content_type, body, _duration = _fetch(
+            warmup_client,
+            page_url,
+            timeout_seconds,
+            maximum_body_bytes,
+            None,
+        )
+        _validate_delivery_response(
+            page_url,
+            (page_url,),
+            status,
+            final_url,
+            content_type,
+            require_html=True,
+        )
+        resources = _extract_page_resources(
+            body, final_url, maximum_resources
+        )
+        approved_urls = (page_url, *resources)
+        client = opener
+        total_bytes = len(body)
+        for resource_url in resources:
+            resource_client = client or _build_product_opener((resource_url,))
+            status, final_url, content_type, resource_body, _duration = _fetch(
+                resource_client,
+                resource_url,
+                timeout_seconds,
+                maximum_body_bytes,
+                None,
+            )
+            _validate_delivery_response(
+                resource_url,
+                approved_urls,
+                status,
+                final_url,
+                content_type,
+            )
+            total_bytes = _add_delivery_bytes(total_bytes, len(resource_body))
+    except Exception as exc:
+        aggregate["delivery"] = False
+        return _failed_observation(
+            target,
+            (),
+            aggregate,
+            product_failure_message(f"{target_id} page delivery warm-up", exc),
+        )
+
+    samples = []
+    errors = []
+    for sequence in range(1, sample_count + 1):
+        try:
+            duration = _execute_page_delivery(
+                client,
+                page_url,
+                resources,
+                approved_urls,
+                timeout_seconds,
+                maximum_body_bytes,
+                clock,
+            )
+        except Exception as exc:
+            aggregate["delivery"] = False
+            error = product_failure_message(
+                f"{target_id} page delivery request", exc
+            )
+            samples.append(
+                TimingSample(sequence, _failure_duration(exc), False, error)
+            )
+            errors.append(f"sample {sequence}: {error}")
+        else:
+            samples.append(TimingSample(sequence, duration))
+    return _observation(
+        target,
+        tuple(samples),
+        aggregate,
+        "; ".join(errors) if errors else None,
+    )
+
+
+def _extract_page_resources(
+    body: bytes,
+    page_url: str,
+    maximum_resources: int = MAX_PAGE_RESOURCES,
+) -> tuple[str, ...]:
+    _require_positive_integer(maximum_resources, "maximum_resources")
+    parser = _PageResourceParser()
+    parser.feed(_decode(body))
+    page_origin = _origin(page_url, reject_credentials=True)
+    resources = {}
+    for reference in parser.references:
+        resolved = urljoin(page_url, reference)
+        parsed = urlsplit(resolved)
+        if parsed.username or parsed.password:
+            raise ProductValidationError("page resource URL contains credentials")
+        if _origin(resolved, reject_credentials=True) != page_origin:
+            raise ProductValidationError("page resource URL is not same-origin")
+        normalized = urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                parsed.path or "/",
+                parsed.query,
+                "",
+            )
+        )
+        resources.setdefault(
+            _url_key(normalized, reject_credentials=True), normalized
+        )
+    if len(resources) > maximum_resources:
+        raise ProductValidationError(
+            f"page resource manifest exceeded {maximum_resources} resources"
+        )
+    return tuple(resources[key] for key in sorted(resources))
+
+
+def _execute_page_delivery(
+    opener,
+    page_url,
+    resources,
+    approved_urls,
+    timeout_seconds,
+    maximum_body_bytes,
+    clock,
+):
+    duration = 0.0
+    total_bytes = 0
+    for url in (page_url, *resources):
+        try:
+            request_opener = opener or _build_product_opener((url,))
+            status, final_url, content_type, body, request_duration = _fetch(
+                request_opener, url, timeout_seconds, maximum_body_bytes, clock
+            )
+            duration += request_duration
+            _validate_delivery_response(
+                url,
+                approved_urls,
+                status,
+                final_url,
+                content_type,
+                require_html=url == page_url,
+            )
+            total_bytes = _add_delivery_bytes(total_bytes, len(body))
+        except Exception as exc:
+            failure_duration = duration + _failure_duration(exc)
+            setattr(exc, "_openstack_perf_duration", failure_duration)
+            raise
+    return duration
+
+
+def _validate_delivery_response(
+    expected_url,
+    approved_urls,
+    status,
+    final_url,
+    content_type,
+    *,
+    require_html=False,
+):
+    try:
+        expected_origin = _origin(expected_url, reject_credentials=True)
+        final_origin = _origin(final_url, reject_credentials=True)
+        final_destination = _url_key(final_url, reject_credentials=True)
+        expected_destination = _url_key(expected_url, reject_credentials=True)
+        approved = {
+            _url_key(url, reject_credentials=True) for url in approved_urls
+        }
+    except ValueError:
+        raise ProductValidationError(
+            "page delivery response destination was not approved"
+        ) from None
+    if (
+        expected_origin != final_origin
+        or final_destination != expected_destination
+        or final_destination not in approved
+    ):
+        raise ProductValidationError(
+            "page delivery response destination was not approved"
+        )
+    if status != 200:
+        raise ProductValidationError("expected HTTP status 200")
+    if require_html and content_type != "text/html":
+        raise ProductValidationError("expected HTML content type")
+
+
+def _add_delivery_bytes(current, added):
+    total = current + added
+    if total > MAX_PAGE_DELIVERY_BYTES:
+        raise ProductValidationError(
+            "page delivery exceeded the 16 MiB aggregate limit"
+        )
+    return total
 
 
 def _text_target(scenario_id, target_id, name, base_url, path, marker):
@@ -469,6 +722,27 @@ def _validated_base_url(value):
     return value.rstrip("/") + "/"
 
 
+def _validated_page_path(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("page path must be non-empty")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or not value.startswith("/")
+        or value.startswith("//")
+        or "//" in value
+        or "\\" in value
+        or "%" in value
+        or any(character.isspace() or ord(character) < 32 for character in value)
+        or any(segment in {".", ".."} for segment in parsed.path.split("/"))
+    ):
+        raise ValueError("page path must be a safe absolute-path reference")
+    return value
+
+
 def _target_url(base_url, path):
     relative_path = (
         path.lstrip("/")
@@ -530,3 +804,9 @@ def _require_body_limit(value):
         raise ValueError(
             "maximum_body_bytes must be between 1 and 2097152"
         )
+
+
+def _require_page_resource_limit(value):
+    _require_positive_integer(value, "maximum_resources")
+    if value > MAX_PAGE_RESOURCE_LIMIT:
+        raise ValueError("maximum_resources must be at most 64")

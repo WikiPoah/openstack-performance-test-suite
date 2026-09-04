@@ -4,7 +4,12 @@ from unittest.mock import patch
 import pytest
 
 from openstack_perf.comparison import Metric
-from openstack_perf.config import ConfigurationError, load_config
+from openstack_perf.config import (
+    ConfigurationError,
+    PageDeliveryTargetConfig,
+    ProductConfig,
+    load_config,
+)
 
 
 EXAMPLE = Path(__file__).parents[2] / "config" / "regression.example.toml"
@@ -27,6 +32,19 @@ def test_example_configuration_is_complete_and_maps_policies():
     assert config.consumer.cloud == "devstack-perf"
     assert config.corp.cloud == "devstack-corp-ro"
     assert config.product.backends[0].target_id == "backend.mariadb"
+    assert isinstance(config.product.page_delivery_targets, tuple)
+    assert [target.target_id for target in config.product.page_delivery_targets] == [
+        "wordpress.home",
+        "static.home",
+        "static.about",
+        "static.products",
+        "static.team",
+        "static.contact",
+    ]
+    assert [target.maximum_resources for target in config.product.page_delivery_targets] == [
+        32, 64, 64, 64, 64, 64,
+    ]
+    assert config.scenarios.page_delivery.samples == 10
     assert config.scenarios.vm_lifecycle.samples == 3
     assert [item.metric for item in config.comparison_policies[0].tolerances] == [
         Metric.P50,
@@ -35,6 +53,26 @@ def test_example_configuration_is_complete_and_maps_policies():
     assert ("infrastructure.server_attachment", "corp-db") in (
         config.functional_only_keys
     )
+    assert ("product.page_delivery", "wordpress.home") not in (
+        config.functional_only_keys
+    )
+    assert len(config.functional_only_keys) == 18
+    page_policies = tuple(
+        policy for policy in config.comparison_policies
+        if policy.scenario_id == "product.page_delivery"
+    )
+    assert [policy.target_id for policy in page_policies] == [
+        target.target_id for target in config.product.page_delivery_targets
+    ]
+    assert {policy.minimum_sample_count for policy in page_policies} == {10}
+    assert {
+        tuple(item.relative for item in policy.tolerances)
+        for policy in page_policies
+    } == {(0.50, 0.50)}
+    assert {
+        tuple(item.absolute_seconds for item in policy.tolerances)
+        for policy in page_policies
+    } == {(0.25, 0.50)}
 
 
 def test_config_validation_performs_no_external_activity():
@@ -82,6 +120,102 @@ def test_duplicate_backend_ids_are_rejected(tmp_path):
         _load_text(tmp_path, text)
 
 
+def test_duplicate_page_delivery_target_ids_are_rejected(tmp_path):
+    text = _example_text().replace(
+        'target_id = "static.home"', 'target_id = "wordpress.home"', 1
+    )
+
+    with pytest.raises(ConfigurationError, match="target IDs must be unique"):
+        _load_text(tmp_path, text)
+
+
+def test_duplicate_normalized_page_delivery_paths_are_rejected(tmp_path):
+    text = _example_text().replace(
+        'path = "/site/about.html"', 'path = "/site"', 1
+    )
+
+    with pytest.raises(ConfigurationError, match="target paths must be unique"):
+        _load_text(tmp_path, text)
+
+
+@pytest.mark.parametrize("value", ["", "UPPER", "not stable"])
+def test_invalid_page_delivery_target_ids_are_rejected(tmp_path, value):
+    text = _example_text().replace(
+        'target_id = "wordpress.home"', f'target_id = "{value}"', 1
+    )
+
+    with pytest.raises(ConfigurationError, match="target_id"):
+        _load_text(tmp_path, text)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "site/",
+        "//outside.test/site/",
+        "http://outside.test/site/",
+        "http://user:password@outside.test/site/",
+        "/site/?query=true",
+        "/site/#fragment",
+        "/site/../other",
+        "/site/%zz",
+        "/site/%2e%2e/other",
+        "/site//other",
+    ],
+)
+def test_invalid_page_delivery_paths_are_rejected(tmp_path, value):
+    text = _example_text().replace('path = "/"', f'path = "{value}"', 1)
+
+    with pytest.raises(ConfigurationError, match="path"):
+        _load_text(tmp_path, text)
+
+
+@pytest.mark.parametrize("value", ["true", '"64"', "0", "-1", "65"])
+def test_invalid_page_delivery_resource_limits_are_rejected(tmp_path, value):
+    text = _example_text().replace(
+        "maximum_resources = 32", f"maximum_resources = {value}", 1
+    )
+
+    with pytest.raises(ConfigurationError, match="maximum_resources"):
+        _load_text(tmp_path, text)
+
+
+def test_unknown_page_delivery_target_field_is_rejected(tmp_path):
+    text = _example_text().replace(
+        'target_id = "wordpress.home"',
+        'target_id = "wordpress.home"\nrecursive = true',
+        1,
+    )
+
+    with pytest.raises(ConfigurationError, match="unknown field"):
+        _load_text(tmp_path, text)
+
+
+def test_page_delivery_target_collection_is_immutable():
+    config = load_config(EXAMPLE)
+
+    with pytest.raises(AttributeError):
+        config.product.page_delivery_targets.append("extra")
+
+
+def test_product_config_protects_page_targets_from_caller_list_mutation():
+    supplied = [
+        PageDeliveryTargetConfig("wordpress.home", "/", "Home", 32)
+    ]
+    product = ProductConfig(
+        "http://product.test", 10.0, 2097152,
+        page_delivery_targets=supplied,
+    )
+
+    supplied.append(PageDeliveryTargetConfig("static.home", "/site/", "Site", 64))
+
+    assert isinstance(product.page_delivery_targets, tuple)
+    assert [target.target_id for target in product.page_delivery_targets] == [
+        "wordpress.home"
+    ]
+
+
 def test_duplicate_policy_keys_are_rejected(tmp_path):
     policy = '''
 [[comparison.policies]]
@@ -103,6 +237,53 @@ def test_performance_scenario_requires_policy(tmp_path):
     )
 
     with pytest.raises(ConfigurationError, match="disabled or unknown"):
+        _load_text(tmp_path, text)
+
+
+def test_page_delivery_performance_scenario_requires_policy(tmp_path):
+    text = _example_text()
+    start = text.index(
+        '[[comparison.policies]]\nscenario_id = "product.page_delivery"'
+    )
+    end = text.index('[[comparison.policies]]', start + 1)
+
+    with pytest.raises(ConfigurationError, match="require comparison policies"):
+        _load_text(tmp_path, text[:start] + text[end:])
+
+
+def test_each_page_delivery_target_requires_its_own_policy(tmp_path):
+    text = _example_text()
+    start = text.index(
+        '[[comparison.policies]]\nscenario_id = "product.page_delivery"\n'
+        'target_id = "static.products"'
+    )
+    end = text.index('[[comparison.policies]]', start + 1)
+
+    with pytest.raises(ConfigurationError, match="static.products"):
+        _load_text(tmp_path, text[:start] + text[end:])
+
+
+def test_stale_page_delivery_policy_is_rejected(tmp_path):
+    text = _example_text().replace(
+        'target_id = "static.products"\nminimum_sample_count = 10',
+        'target_id = "static.unknown"\nminimum_sample_count = 10',
+        1,
+    )
+
+    with pytest.raises(ConfigurationError, match="disabled or unknown"):
+        _load_text(tmp_path, text)
+
+
+def test_page_delivery_policy_minimum_cannot_exceed_sample_limit(tmp_path):
+    text = _example_text().replace(
+        '[scenarios.page_delivery]\nenabled = true\n'
+        'comparison_mode = "performance"\nsamples = 10',
+        '[scenarios.page_delivery]\nenabled = true\n'
+        'comparison_mode = "performance"\nsamples = 9',
+        1,
+    )
+
+    with pytest.raises(ConfigurationError, match="minimum exceeds"):
         _load_text(tmp_path, text)
 
 

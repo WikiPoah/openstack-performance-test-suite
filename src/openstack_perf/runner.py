@@ -25,6 +25,7 @@ from openstack_perf.platform_discovery import (
 )
 from openstack_perf.product_http import (
     observe_corporate_web_application,
+    observe_page_delivery,
     observe_service_http_endpoints,
 )
 from openstack_perf.results import (
@@ -167,6 +168,20 @@ def run_regression(
                 timeout_seconds=product.http_timeout_seconds,
                 maximum_body_bytes=product.maximum_body_bytes,
             )
+        )
+    if config.scenarios.page_delivery.enabled:
+        observations.extend(
+            observe_page_delivery(
+                product.base_url,
+                target_id=target.target_id,
+                path=target.path,
+                name=target.name,
+                maximum_resources=target.maximum_resources,
+                sample_count=config.scenarios.page_delivery.samples,
+                timeout_seconds=product.http_timeout_seconds,
+                maximum_body_bytes=product.maximum_body_bytes,
+            )
+            for target in product.page_delivery_targets
         )
     if config.scenarios.application_services.enabled:
         observations.extend(

@@ -108,6 +108,10 @@ def _runner_patches(events=None, workflow=None):
             "static.team", "static.contact",
         )
     )
+    def page_delivery(*args, target_id, **kwargs):
+        if events is not None:
+            events.append(f"page-delivery:{target_id}")
+        return _observation("product.page_delivery", target_id)
     services = tuple(
         _observation("product.service_http", target)
         for target in (
@@ -155,6 +159,10 @@ def _runner_patches(events=None, workflow=None):
             side_effect=record("web", web),
         ),
         patch(
+            "openstack_perf.runner.observe_page_delivery",
+            side_effect=page_delivery,
+        ),
+        patch(
             "openstack_perf.runner.observe_service_http_endpoints",
             side_effect=record("http-services", services),
         ),
@@ -199,7 +207,11 @@ def test_dual_gate_precedes_every_external_action(tmp_path, live, environ):
     config = load_config(EXAMPLE)
     with patch("openstack_perf.runner.create_connection") as connection, patch(
         "openstack_perf.runner.observe_corporate_web_application"
-    ) as http, patch("openstack_perf.runner.observe_backend_reachability") as ssh:
+    ) as http, patch(
+        "openstack_perf.runner.observe_page_delivery"
+    ) as page_delivery, patch(
+        "openstack_perf.runner.observe_backend_reachability"
+    ) as ssh:
         with pytest.raises(LiveAuthorizationError):
             run_regression(
                 config,
@@ -210,6 +222,7 @@ def test_dual_gate_precedes_every_external_action(tmp_path, live, environ):
             )
     connection.assert_not_called()
     http.assert_not_called()
+    page_delivery.assert_not_called()
     ssh.assert_not_called()
 
 
@@ -256,7 +269,14 @@ def test_runner_uses_deterministic_read_only_first_vm_last_order(tmp_path):
     outcome = _run_with_patches(tmp_path, config, patches)
 
     assert events == [
-        "service", "image", "corp", "web", "http-services", "backends",
+        "service", "image", "corp", "web",
+        "page-delivery:wordpress.home",
+        "page-delivery:static.home",
+        "page-delivery:static.about",
+        "page-delivery:static.products",
+        "page-delivery:static.team",
+        "page-delivery:static.contact",
+        "http-services", "backends",
         "vm", "vm", "vm",
     ]
     assert connections.call_args_list == [
@@ -271,6 +291,43 @@ def test_runner_uses_deterministic_read_only_first_vm_last_order(tmp_path):
         "12345678-1234-5678-1234-567812345678.json"
     )
     assert read_run_artifact(outcome.artifact_path) == outcome.run
+
+
+def test_runner_executes_each_configured_page_delivery_target_once(tmp_path):
+    config, writable, corp, connections, patches, vm_mock = _runner_patches()
+    calls = []
+
+    def observe(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _observation("product.page_delivery", kwargs["target_id"])
+
+    patches = list(patches)
+    patches[6] = patch(
+        "openstack_perf.runner.observe_page_delivery", side_effect=observe
+    )
+
+    _run_with_patches(tmp_path, config, patches)
+
+    assert [kwargs["target_id"] for _args, kwargs in calls] == [
+        "wordpress.home",
+        "static.home",
+        "static.about",
+        "static.products",
+        "static.team",
+        "static.contact",
+    ]
+    assert [kwargs["path"] for _args, kwargs in calls] == [
+        "/",
+        "/site/",
+        "/site/about.html",
+        "/site/products.html",
+        "/site/team.html",
+        "/site/contact.html",
+    ]
+    assert [kwargs["maximum_resources"] for _args, kwargs in calls] == [
+        32, 64, 64, 64, 64, 64,
+    ]
+    assert {kwargs["sample_count"] for _args, kwargs in calls} == {10}
 
 
 def test_primary_scope_is_established_before_fresh_service_connections(tmp_path):
@@ -520,6 +577,7 @@ def test_disabled_scenarios_are_not_invoked(tmp_path):
                 config.scenarios.infrastructure_state, enabled=False
             ),
             web_application=replace(config.scenarios.web_application, enabled=False),
+            page_delivery=replace(config.scenarios.page_delivery, enabled=False),
             application_services=replace(
                 config.scenarios.application_services, enabled=False
             ),

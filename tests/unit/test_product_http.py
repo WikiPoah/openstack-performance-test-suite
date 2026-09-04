@@ -10,11 +10,16 @@ import pytest
 
 from openstack_perf.artifacts import deserialize_run, serialize_run
 from openstack_perf.product_http import (
+    MAX_PAGE_DELIVERY_BYTES,
+    MAX_PAGE_RESOURCES,
     MAX_RESPONSE_BYTES,
     ProductValidationError,
     _SameOriginRedirectHandler,
+    _add_delivery_bytes,
+    _extract_page_resources,
     _fetch,
     observe_corporate_web_application,
+    observe_page_delivery,
     observe_service_http_endpoints,
 )
 from openstack_perf.results import (
@@ -50,6 +55,17 @@ class _Response:
         return self.url
 
 
+class _SizedBody:
+    def __init__(self, size):
+        self.size = size
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, _item):
+        return self
+
+
 class _RoutingOpener:
     def __init__(self, routes):
         self.routes = routes
@@ -76,6 +92,20 @@ class _RoutingOpener:
 class _CrossOriginOpener:
     def open(self, request, timeout):
         return _Response("http://outside.test/", b"Active connections:")
+
+
+class _FinalUrlOpener(_RoutingOpener):
+    def __init__(self, routes, final_urls):
+        super().__init__(routes)
+        self.final_urls = final_urls
+
+    def open(self, request, timeout):
+        response = super().open(request, timeout)
+        final_url = self.final_urls.get(request.full_url, request.full_url)
+        if isinstance(final_url, list):
+            final_url = final_url.pop(0)
+        response.url = final_url
+        return response
 
 
 def _web_routes(release_title="Release notes 1.0"):
@@ -106,6 +136,20 @@ def _service_routes():
         "http://product.test:8080/": b"Corp Tomcat",
         "http://product.test:8080/examples/": b"Apache Tomcat Examples",
         "http://product.test:8080/examples/servlets/servlet/HelloWorldExample": b"Hello World!",
+    }
+
+
+def _page_routes():
+    return {
+        "http://product.test/": (
+            b'<link rel="stylesheet" href="/style.css">'
+            b'<script src="/app.js"></script>'
+            b'<img src="/image.png">'
+            b'<a href="/ignored">Ignored</a>'
+        ),
+        "http://product.test/app.js": b"script",
+        "http://product.test/image.png": b"image",
+        "http://product.test/style.css": b"style",
     }
 
 
@@ -187,6 +231,483 @@ def test_default_web_sampling_has_one_warmup_and_ten_timed_requests_per_target()
     assert all(len(item.samples) == 10 for item in observations)
     assert all(item.statistics.sample_count == 10 for item in observations)
     assert len(opener.calls) == 9 * 11
+
+
+def test_page_resource_extraction_is_same_origin_deduplicated_and_sorted():
+    body = (
+        b'<img src="images/a.png#first">'
+        b'<script src="/z.js?version=1#fragment"></script>'
+        b'<link REL="stylesheet preload" href="http://product.test/a.css">'
+        b'<img src="images/a.png#second">'
+        b'<a href="/not-an-asset">ignored</a>'
+        b'<link rel="icon" href="/favicon.ico">'
+    )
+
+    assert _extract_page_resources(body, "http://product.test/path/") == (
+        "http://product.test/a.css",
+        "http://product.test/path/images/a.png",
+        "http://product.test/z.js?version=1",
+    )
+
+
+@pytest.mark.parametrize(
+    "reference,match",
+    [
+        ("http://outside.test/a.js", "same-origin"),
+        ("http://user:password@product.test/a.js", "credentials"),
+    ],
+)
+def test_page_resource_extraction_rejects_unsafe_urls(reference, match):
+    with pytest.raises(ProductValidationError, match=match):
+        _extract_page_resources(
+            f'<script src="{reference}"></script>'.encode(),
+            "http://product.test/",
+        )
+
+
+def test_empty_page_resource_manifest_is_allowed():
+    assert _extract_page_resources(b"<p>no assets</p>", "http://product.test/") == ()
+
+
+def test_page_resource_manifest_allows_32_and_rejects_33():
+    allowed = b"".join(
+        f'<img src="/{index}.png">'.encode() for index in range(MAX_PAGE_RESOURCES)
+    )
+    excessive = allowed + b'<img src="/extra.png">'
+
+    assert len(_extract_page_resources(allowed, "http://product.test/")) == 32
+    with pytest.raises(ProductValidationError, match="exceeded 32"):
+        _extract_page_resources(excessive, "http://product.test/")
+
+
+def test_page_resource_manifest_allows_configured_64_resource_bound():
+    exact = b"".join(
+        f'<img src="/{index}.png">'.encode() for index in range(64)
+    )
+
+    assert len(_extract_page_resources(exact, "http://product.test/", 64)) == 64
+    with pytest.raises(ProductValidationError, match="exceeded 64"):
+        _extract_page_resources(
+            exact + b'<img src="/extra.png">',
+            "http://product.test/",
+            64,
+        )
+
+
+def test_page_delivery_uses_configured_path_identity_and_name():
+    page = "http://product.test/site/products.html"
+    opener = _RoutingOpener({page: b"<p>Products</p>"})
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        target_id="static.products",
+        path="/site/products.html",
+        name="Static site products page delivery",
+        sample_count=1,
+        opener=opener,
+        clock=_clock(),
+    )
+
+    assert observation.scenario_id == "product.page_delivery"
+    assert observation.target_id == "static.products"
+    assert observation.name == "Static site products page delivery"
+    assert [call[0].full_url for call in opener.calls] == [page, page]
+
+
+def test_40_image_page_delivery_succeeds_with_64_resource_limit():
+    page = "http://product.test/site/products.html"
+    body = b"".join(
+        f'<img src="/assets/{index}.png">'.encode() for index in range(40)
+    )
+    routes = {page: body}
+    routes.update(
+        {
+            f"http://product.test/assets/{index}.png": b"image"
+            for index in range(40)
+        }
+    )
+    opener = _RoutingOpener(routes)
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        target_id="static.products",
+        path="/site/products.html",
+        name="Static site products page delivery",
+        maximum_resources=64,
+        sample_count=1,
+        opener=opener,
+        clock=_clock(100),
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+    assert observation.statistics.sample_count == 1
+    assert len(opener.calls) == 41 * 2
+
+
+def test_page_delivery_does_not_discover_resources_recursively():
+    page = "http://product.test/site/products.html"
+    stylesheet = "http://product.test/assets/site.css"
+    nested = "http://product.test/assets/nested.png"
+    opener = _RoutingOpener(
+        {
+            page: b'<link rel="stylesheet" href="/assets/site.css">',
+            stylesheet: b'<img src="/assets/nested.png">',
+        }
+    )
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        target_id="static.products",
+        path="/site/products.html",
+        name="Static site products page delivery",
+        maximum_resources=64,
+        sample_count=1,
+        opener=opener,
+        clock=_clock(),
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+    assert nested not in [call[0].full_url for call in opener.calls]
+
+
+def test_page_delivery_targets_enforce_independent_resource_limits():
+    body = b"".join(f'<img src="/{index}.png">'.encode() for index in range(40))
+    routes = {"http://product.test/": body}
+    routes.update(
+        {f"http://product.test/{index}.png": b"image" for index in range(40)}
+    )
+
+    bounded = observe_page_delivery(
+        "http://product.test",
+        sample_count=1,
+        maximum_resources=32,
+        opener=_RoutingOpener(dict(routes)),
+        clock=_clock(100),
+    )
+    expanded = observe_page_delivery(
+        "http://product.test",
+        sample_count=1,
+        maximum_resources=64,
+        opener=_RoutingOpener(dict(routes)),
+        clock=_clock(100),
+    )
+
+    assert bounded.functional_verdict is FunctionalVerdict.FAILURE
+    assert "exceeded 32" in bounded.error_message
+    assert expanded.functional_verdict is FunctionalVerdict.PASS
+
+
+@pytest.mark.parametrize("resource_count,passes", [(3, True), (4, False)])
+def test_page_delivery_enforces_exact_configured_resource_boundary(
+    resource_count, passes
+):
+    body = b"".join(
+        f'<img src="/assets/{index}.png">'.encode()
+        for index in range(resource_count)
+    )
+    routes = {"http://product.test/": body}
+    routes.update(
+        {
+            f"http://product.test/assets/{index}.png": b"image"
+            for index in range(resource_count)
+        }
+    )
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        maximum_resources=3,
+        sample_count=1,
+        opener=_RoutingOpener(routes),
+        clock=_clock(),
+    )
+
+    assert (observation.functional_verdict is FunctionalVerdict.PASS) is passes
+    if not passes:
+        assert "exceeded 3" in observation.error_message
+
+
+def test_page_delivery_uses_one_warmup_and_ten_timed_full_deliveries():
+    opener = _RoutingOpener(_page_routes())
+
+    observation = observe_page_delivery(
+        "http://product.test", opener=opener, clock=_clock()
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+    assert len(observation.samples) == 10
+    assert observation.statistics.sample_count == 10
+    assert len(opener.calls) == 4 * 11
+    assert {call[0].method for call in opener.calls} == {"GET"}
+
+
+def test_page_delivery_duration_sums_only_network_body_read_intervals():
+    observation = observe_page_delivery(
+        "http://product.test",
+        sample_count=1,
+        opener=_RoutingOpener(_page_routes()),
+        clock=_clock(),
+    )
+
+    assert observation.samples[0].duration_seconds == 4.0
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["text/html", "text/html; charset=UTF-8", " Text/HTML ; Charset=UTF-8"],
+)
+def test_page_delivery_accepts_normalized_html_content_type(content_type):
+    routes = _page_routes()
+    routes["http://product.test/"] = (200, routes["http://product.test/"], content_type)
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=1,
+        opener=_RoutingOpener(routes), clock=_clock()
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+
+
+@pytest.mark.parametrize(
+    "content_type", [None, "application/json", "text/plain", "image/png"]
+)
+def test_page_delivery_rejects_non_html_primary_content_type(content_type):
+    routes = _page_routes()
+    routes["http://product.test/"] = (
+        200, routes["http://product.test/"], content_type
+    )
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=1,
+        opener=_RoutingOpener(routes), clock=_clock()
+    )
+
+    assert observation.samples == ()
+    assert observation.error_message.endswith("expected HTML content type")
+
+
+def test_page_delivery_timed_primary_must_remain_html():
+    routes = _page_routes()
+    body = routes["http://product.test/"]
+    routes["http://product.test/"] = [
+        (200, body, "text/html"),
+        (200, body, "application/json"),
+    ]
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=1,
+        opener=_RoutingOpener(routes), clock=_clock()
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.FAILURE
+    assert observation.samples[0].successful is False
+    assert "expected HTML content type" in observation.error_message
+
+
+def test_page_delivery_reuses_the_frozen_warmup_manifest():
+    routes = _page_routes()
+    routes["http://product.test/"] = [
+        b'<img src="/image.png">',
+        b'<img src="/different.png">',
+    ]
+    opener = _RoutingOpener(routes)
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=1, opener=opener, clock=_clock()
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+    assert [call[0].full_url for call in opener.calls] == [
+        "http://product.test/",
+        "http://product.test/image.png",
+        "http://product.test/",
+        "http://product.test/image.png",
+    ]
+
+
+def test_page_delivery_primary_cannot_finish_at_approved_asset():
+    page = "http://product.test/"
+    asset = "http://product.test/image.png"
+    opener = _FinalUrlOpener(
+        {page: b'<img src="/image.png">', asset: b"image"},
+        {page: [page, asset]},
+    )
+
+    observation = observe_page_delivery(
+        page, sample_count=1, opener=opener, clock=_clock()
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.FAILURE
+    assert "destination was not approved" in observation.error_message
+
+
+@pytest.mark.parametrize(
+    "unexpected_final",
+    ["http://product.test/b.js", "http://product.test/"],
+)
+def test_page_delivery_asset_must_finish_at_its_exact_url(unexpected_final):
+    page = "http://product.test/"
+    asset_a = "http://product.test/a.js"
+    asset_b = "http://product.test/b.js"
+    opener = _FinalUrlOpener(
+        {
+            page: b'<script src="/a.js"></script><script src="/b.js"></script>',
+            asset_a: b"a",
+            asset_b: b"b",
+        },
+        {asset_a: unexpected_final},
+    )
+
+    observation = observe_page_delivery(
+        page, sample_count=1, opener=opener, clock=_clock()
+    )
+
+    assert observation.samples == ()
+    assert "destination was not approved" in observation.error_message
+
+
+def test_page_delivery_redirect_handler_rejects_another_manifest_asset():
+    handler = _SameOriginRedirectHandler(("http://product.test/a.js",))
+    parent = MagicMock()
+    handler.add_parent(parent)
+
+    with pytest.raises(ProductValidationError):
+        handler.http_error_302(
+            Request("http://product.test/a.js"),
+            MagicMock(),
+            302,
+            "Found",
+            {"location": "/b.js"},
+        )
+
+    parent.open.assert_not_called()
+
+
+def test_page_delivery_asset_failure_during_warmup_prevents_samples():
+    routes = _page_routes()
+    routes["http://product.test/image.png"] = URLError("token=private")
+    opener = _RoutingOpener(routes)
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=2, opener=opener, clock=_clock()
+    )
+
+    assert observation.samples == ()
+    assert observation.statistics is None
+    assert observation.functional_verdict is FunctionalVerdict.FAILURE
+    assert observation.error_message.endswith("URLError")
+    assert "private" not in repr(observation)
+
+
+def test_page_delivery_rejects_non_200_asset():
+    routes = _page_routes()
+    routes["http://product.test/app.js"] = (503, b"private")
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=1,
+        opener=_RoutingOpener(routes), clock=_clock()
+    )
+
+    assert observation.samples == ()
+    assert "expected HTTP status 200" in observation.error_message
+    assert "private" not in repr(observation)
+
+
+def test_page_delivery_accepts_asset_at_response_limit():
+    routes = {
+        "http://product.test/": b'<img src="/image.png">',
+        "http://product.test/image.png": b"x" * MAX_RESPONSE_BYTES,
+    }
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=1,
+        opener=_RoutingOpener(routes), clock=_clock()
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+
+
+def test_page_delivery_rejects_asset_above_response_limit():
+    routes = {
+        "http://product.test/": b'<img src="/image.png">',
+        "http://product.test/image.png": b"x" * (MAX_RESPONSE_BYTES + 1),
+    }
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=1,
+        opener=_RoutingOpener(routes), clock=_clock()
+    )
+
+    assert observation.samples == ()
+    assert "2 MiB limit" in observation.error_message
+
+
+def test_page_delivery_failed_sample_retains_successful_sample_statistics():
+    routes = {
+        "http://product.test/": b'<img src="/image.png">',
+        "http://product.test/image.png": [
+            b"warm-up", URLError("private"), b"success"
+        ],
+    }
+
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=2,
+        opener=_RoutingOpener(routes), clock=_clock()
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.FAILURE
+    assert [sample.successful for sample in observation.samples] == [False, True]
+    assert observation.statistics.sample_count == 1
+    assert observation.statistics.p50_seconds == observation.samples[1].duration_seconds
+    assert "private" not in repr(observation)
+
+
+def test_page_delivery_aggregate_byte_limit_accepts_exact_and_rejects_above():
+    assert _add_delivery_bytes(MAX_PAGE_DELIVERY_BYTES - 1, 1) == (
+        MAX_PAGE_DELIVERY_BYTES
+    )
+    with pytest.raises(ProductValidationError, match="16 MiB"):
+        _add_delivery_bytes(MAX_PAGE_DELIVERY_BYTES, 1)
+
+
+@pytest.mark.parametrize("extra_byte,passes", [(0, True), (1, False)])
+def test_page_delivery_execution_enforces_aggregate_body_limit(
+    extra_byte, passes
+):
+    page = "http://product.test/"
+    asset_urls = tuple(
+        f"http://product.test/{index}.bin" for index in range(8)
+    )
+    body = b"".join(
+        f'<img src="/{index}.bin">'.encode() for index in range(8)
+    )
+    remaining = MAX_PAGE_DELIVERY_BYTES - len(body)
+    routes = {page: body}
+    for asset_url in asset_urls[:-1]:
+        routes[asset_url] = _SizedBody(MAX_RESPONSE_BYTES)
+        remaining -= MAX_RESPONSE_BYTES
+    routes[asset_urls[-1]] = _SizedBody(remaining + extra_byte)
+
+    observation = observe_page_delivery(
+        page, sample_count=1, opener=_RoutingOpener(routes), clock=_clock(100)
+    )
+
+    if passes:
+        assert observation.functional_verdict is FunctionalVerdict.PASS
+        assert observation.samples[0].successful is True
+    else:
+        assert observation.samples == ()
+        assert "16 MiB aggregate limit" in observation.error_message
+
+
+def test_page_delivery_observation_round_trips_through_artifact_schema():
+    observation = observe_page_delivery(
+        "http://product.test", sample_count=2,
+        opener=_RoutingOpener(_page_routes()), clock=_clock()
+    )
+
+    restored = deserialize_run(serialize_run(_run((observation,))))
+
+    assert restored.observations == (observation,)
 
 
 def test_timing_stops_after_body_read_and_before_content_validation():
@@ -720,6 +1241,51 @@ def test_invalid_sample_count_is_rejected(sample_count):
         )
 
 
+@pytest.mark.parametrize("maximum_resources", [True, 0, -1, 1.5, 65])
+def test_invalid_page_delivery_resource_limit_is_rejected(maximum_resources):
+    with pytest.raises((TypeError, ValueError)):
+        observe_page_delivery(
+            "http://product.test",
+            maximum_resources=maximum_resources,
+            opener=SimpleNamespace(),
+        )
+
+
+@pytest.mark.parametrize("target_id", ["", "UPPER", "not stable", True])
+def test_invalid_page_delivery_target_identity_is_rejected(target_id):
+    with pytest.raises(ValueError, match="target_id"):
+        observe_page_delivery(
+            "http://product.test",
+            target_id=target_id,
+            opener=SimpleNamespace(),
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "site/",
+        "//outside.test/site/",
+        "http://outside.test/site/",
+        "http://user:password@outside.test/site/",
+        "/site/?query=true",
+        "/site/#fragment",
+        "/site/../other",
+        "/site/%zz",
+        "/site/%2e%2e/other",
+        "/site//other",
+    ],
+)
+def test_unsafe_page_delivery_paths_are_rejected(path):
+    with pytest.raises(ValueError, match="page path"):
+        observe_page_delivery(
+            "http://product.test",
+            path=path,
+            opener=SimpleNamespace(),
+        )
+
+
 @pytest.mark.parametrize("timeout", [True, 0, 10.1, float("inf")])
 def test_http_timeout_must_be_positive_and_at_most_ten_seconds(timeout):
     with pytest.raises((TypeError, ValueError)):
@@ -751,9 +1317,11 @@ def test_live_guard_runs_before_any_http_or_ssh_operation(monkeypatch):
     web_check = MagicMock()
     service_check = MagicMock()
     backend_check = MagicMock()
+    page_delivery = MagicMock()
     monkeypatch.setattr(module, "observe_corporate_web_application", web_check)
     monkeypatch.setattr(module, "observe_service_http_endpoints", service_check)
     monkeypatch.setattr(module, "observe_backend_reachability", backend_check)
+    monkeypatch.setattr(module, "observe_page_delivery", page_delivery)
     monkeypatch.delenv("OPENSTACK_PERF_RUN_LIVE", raising=False)
 
     with pytest.raises(pytest.skip.Exception):
@@ -764,6 +1332,7 @@ def test_live_guard_runs_before_any_http_or_ssh_operation(monkeypatch):
     web_check.assert_not_called()
     service_check.assert_not_called()
     backend_check.assert_not_called()
+    page_delivery.assert_not_called()
 
 
 def test_application_service_fixture_rejects_wrong_bastion(monkeypatch):

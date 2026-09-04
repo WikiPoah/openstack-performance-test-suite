@@ -14,6 +14,66 @@ performance ranges after a platform change. This suite represents those
 workflows directly so functional results and timing measurements can be
 reviewed together.
 
+The central release question is: **Does the candidate release still work
+correctly, and has its performance meaningfully regressed relative to an
+approved baseline?**
+
+## Validated Regression Example
+
+The suite was validated against a controlled OpenStack-backed application
+environment using a known-good Release 1.0 baseline and a changed Release 2.1
+candidate. Both runs used the same suite commit and regression configuration.
+
+The Release 1.0 baseline passed all configured observations. Against Release
+2.1, the suite detected both functional failures and a performance regression
+in a consumer page-delivery workflow that remained functionally available.
+
+For `product.page_delivery / static.home`, p50 increased from 0.014 s to
+0.281 s and p95 from 0.038 s to 0.324 s. The configured baseline-relative
+comparison therefore reported `PERFORMANCE_REGRESSION`.
+
+This demonstrates the intended distinction between availability and
+performance: a workflow can continue to return successfully while becoming
+materially slower for the consumer.
+
+Full methodology, historical experiments, run identifiers, artifact checksums,
+and interpretation are recorded in
+[Controlled benchmark evidence](docs/benchmark-results.md).
+
+## Engineering Choices
+
+The implementation keeps its tooling proportional to that release-regression
+goal:
+
+- Python provides a readable automation layer and direct access to the
+  OpenStack ecosystem. `openstacksdk` supplies established authentication,
+  service discovery, and resource clients rather than duplicating OpenStack
+  API behavior.
+- `pytest` supports deterministic unit tests around external boundaries, while
+  `pytest-bdd` expresses a small set of live scenarios in consumer-facing
+  language without duplicating the underlying workflows.
+- Python's standard-library HTTP facilities are sufficient for the bounded,
+  GET-only product observations and avoid an unnecessary runtime dependency.
+  Backend checks use the system SSH client so the operator's existing SSH
+  configuration and host-key verification remain authoritative.
+- TOML keeps non-secret runtime contracts human-reviewable. Schema-validated
+  JSON artifacts provide portable, deterministic evidence that can be retained
+  and compared without a database or dashboard.
+- p50 represents typical successful timing and p95 exposes slower observations,
+  subject to the deliberately bounded sample counts. Baseline/candidate
+  comparison applies those measurements to a release decision rather than
+  claiming universal platform performance.
+- Explicit live authorization gates separate controlled infrastructure access
+  from ordinary deterministic tests. The default test suite remains non-live.
+
+Sustained load generation serves a different purpose, so tools such as Locust
+or JMeter are outside the current scope rather than alternatives this suite
+attempts to replace.
+
+See [Controlled benchmark evidence](docs/benchmark-results.md) for the recorded
+baseline/candidate experiments, the product-performance coverage gaps they
+exposed, and the final generalized page-delivery result.
+
 ## Testing Approach
 
 The suite is designed around consumer-facing workflows that combine:
@@ -43,16 +103,20 @@ The repository currently provides:
   exact network attachment.
 - Read-only product checks for the supported WordPress, static-site, nginx,
   Tomcat, and backend-listener contracts.
+- Bounded page-delivery observations for six approved consumer-facing pages,
+  measuring each primary HTML document together with its directly referenced
+  same-origin stylesheets, scripts, and images.
 - Immutable regression observations, deterministic p50/p95 statistics,
   schema-versioned JSON artifacts, and configurable baseline comparison.
 - A TOML-configured regression runner and command-line interface that assemble
   complete baseline or candidate artifacts from the existing checks.
-- Six consumer-facing `pytest-bdd` scenarios that verify a consumer can:
+- Seven consumer-facing `pytest-bdd` scenarios that verify a consumer can:
   - Provision and remove a virtual machine.
   - Provision a workload with an address on the requested network.
   - Discover required services and a usable boot image.
   - Confirm configured critical infrastructure remains correctly attached.
   - Use the supported corporate web application paths.
+  - Retrieve the application home page and its required resources.
   - Reach the application services across their public and backend tiers.
 - Unit tests that mock the SDK boundary and do not require a live cloud.
 
@@ -114,6 +178,21 @@ status output, and selected Tomcat pages. The expected WordPress release title
 and application release are supplied externally rather than inferred from
 page content. HTTP observations use one untimed warm-up followed by ten timed
 requests, limit responses to 2 MiB, and reject cross-origin redirects.
+
+The separate page-delivery observations cover the approved WordPress home page
+and five static HTML surfaces. Each freezes a deterministic manifest of directly
+referenced same-origin stylesheets, scripts, and images during its warm-up.
+The WordPress target permits up to 32 direct resources; the static targets
+permit up to 64. Each timed sample retrieves the primary HTML and its frozen
+manifest sequentially, reporting the sum of their network/body-read durations.
+This is a page-delivery proxy: it does not execute JavaScript, render the page,
+or recursively crawl resources. Each response remains limited to 2 MiB and
+each full delivery to 16 MiB.
+
+The TOML target collection is authoritative for complete runner coverage. The
+live BDD scenario remains a thin check of the same production mechanism through
+the representative WordPress home page rather than maintaining a second target
+list.
 
 Backend availability is checked through the approved bastion using one
 non-interactive system SSH invocation. The fixed remote check only opens and
