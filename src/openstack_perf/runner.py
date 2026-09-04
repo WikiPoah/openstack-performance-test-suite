@@ -96,15 +96,6 @@ def run_regression(
     observations = []
     consumer = config.consumer
 
-    if config.scenarios.service_discovery.enabled:
-        observations.append(
-            observe_service_discovery(
-                lambda: create_connection(consumer.cloud),
-                expected_project_name=consumer.project,
-                sample_count=config.scenarios.service_discovery.samples,
-            )
-        )
-
     consumer_connection = None
     try:
         consumer_connection = create_connection(consumer.cloud)
@@ -121,6 +112,15 @@ def run_regression(
 
     if connection_error is not None:
         raise RunnerError(connection_error)
+
+    if config.scenarios.service_discovery.enabled:
+        observations.append(
+            observe_service_discovery(
+                lambda: create_connection(consumer.cloud),
+                expected_project_name=consumer.project,
+                sample_count=config.scenarios.service_discovery.samples,
+            )
+        )
 
     fingerprint = collect_environment_fingerprint(config, consumer_connection)
 

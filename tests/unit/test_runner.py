@@ -273,6 +273,64 @@ def test_runner_uses_deterministic_read_only_first_vm_last_order(tmp_path):
     assert read_run_artifact(outcome.artifact_path) == outcome.run
 
 
+def test_primary_scope_is_established_before_fresh_service_connections(tmp_path):
+    events = []
+    config, writable, corp, connections, patches, vm_mock = _runner_patches(events)
+    fresh_connections = [_connection() for _ in range(10)]
+    supplied_connections = iter((writable, *fresh_connections, corp))
+
+    def create(cloud):
+        connection = next(supplied_connections)
+        events.append(f"connect:{cloud}")
+        return connection
+
+    writable.authorize.side_effect = lambda: events.append("primary-authorize")
+    project = writable.identity.get_project.return_value
+
+    def get_project(project_id):
+        events.append("primary-project")
+        return project
+
+    writable.identity.get_project.side_effect = get_project
+
+    def service_discovery(factory, **_kwargs):
+        events.append("service-start")
+        observed = [factory() for _ in range(10)]
+        assert observed == fresh_connections
+        return _observation("identity.service_discovery", "perf")
+
+    from openstack_perf.platform_discovery import validate_project_scope
+
+    def validate(project_id, observed_project, expected_name):
+        events.append("primary-validate")
+        return validate_project_scope(project_id, observed_project, expected_name)
+
+    patches = list(patches)
+    patches[0] = patch("openstack_perf.runner.create_connection", side_effect=create)
+    patches[1] = patch(
+        "openstack_perf.runner.observe_service_discovery",
+        side_effect=service_discovery,
+    )
+    patches.append(
+        patch(
+            "openstack_perf.runner.validate_project_scope",
+            side_effect=validate,
+        )
+    )
+
+    _run_with_patches(tmp_path, config, patches)
+
+    assert events[:5] == [
+        "connect:devstack-perf",
+        "primary-authorize",
+        "primary-project",
+        "primary-validate",
+        "service-start",
+    ]
+    assert events[5:15] == ["connect:devstack-perf"] * 10
+    assert events[-3:] == ["vm", "vm", "vm"]
+
+
 def test_vm_receives_exact_resolved_ids_and_runs_sequentially(tmp_path):
     config, writable, corp, connections, patches, vm_mock = _runner_patches()
 
@@ -311,7 +369,8 @@ def test_primary_connection_scope_is_validated_before_resource_resolution(tmp_pa
 def test_invalid_primary_scope_blocks_resource_lookup_and_vm(
     tmp_path, project_id, project_name
 ):
-    config, writable, corp, connections, patches, vm_mock = _runner_patches()
+    events = []
+    config, writable, corp, connections, patches, vm_mock = _runner_patches(events)
     writable.current_project_id = project_id
     writable.identity.get_project.return_value.name = project_name
 
@@ -322,6 +381,8 @@ def test_invalid_primary_scope_blocks_resource_lookup_and_vm(
     writable.compute.find_flavor.assert_not_called()
     writable.network.find_network.assert_not_called()
     vm_mock.assert_not_called()
+    assert events == []
+    assert connections.call_count == 1
 
 
 def test_disabled_service_discovery_does_not_bypass_scope_validation(tmp_path):
@@ -344,7 +405,8 @@ def test_disabled_service_discovery_does_not_bypass_scope_validation(tmp_path):
 
 
 def test_project_lookup_failure_is_sanitized_and_blocks_mutation(tmp_path):
-    config, writable, corp, connections, patches, vm_mock = _runner_patches()
+    events = []
+    config, writable, corp, connections, patches, vm_mock = _runner_patches(events)
     writable.identity.get_project.side_effect = RuntimeError("token=private")
 
     with pytest.raises(RunnerError) as raised:
@@ -353,10 +415,13 @@ def test_project_lookup_failure_is_sanitized_and_blocks_mutation(tmp_path):
     assert "RuntimeError" in str(raised.value)
     assert "private" not in str(raised.value)
     vm_mock.assert_not_called()
+    assert events == []
+    assert connections.call_count == 1
 
 
 def test_connection_or_authorization_failure_blocks_mutation(tmp_path):
-    config, writable, corp, connections, patches, vm_mock = _runner_patches()
+    events = []
+    config, writable, corp, connections, patches, vm_mock = _runner_patches(events)
     writable.authorize.side_effect = RuntimeError("password=private")
 
     with pytest.raises(RunnerError) as raised:
@@ -365,10 +430,13 @@ def test_connection_or_authorization_failure_blocks_mutation(tmp_path):
     assert "RuntimeError" in str(raised.value)
     assert "private" not in str(raised.value)
     vm_mock.assert_not_called()
+    assert events == []
+    assert connections.call_count == 1
 
 
 def test_connection_creation_failure_blocks_mutation(tmp_path):
-    config, writable, corp, connections, patches, vm_mock = _runner_patches()
+    events = []
+    config, writable, corp, connections, patches, vm_mock = _runner_patches(events)
     patches = list(patches)
     patches[0] = patch(
         "openstack_perf.runner.create_connection",
@@ -381,6 +449,7 @@ def test_connection_creation_failure_blocks_mutation(tmp_path):
     assert "RuntimeError" in str(raised.value)
     assert "private" not in str(raised.value)
     vm_mock.assert_not_called()
+    assert events == []
 
 
 def test_resource_resolution_requires_exact_name_and_stops_vm():
