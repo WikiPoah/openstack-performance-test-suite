@@ -359,10 +359,12 @@ credentials are supplied externally through the standard `clouds.yaml`
 configuration supported by `openstacksdk`; credential values must never be
 committed to this repository.
 
-The application code does not hard-code a particular cloud, project, image,
-flavor, network, or infrastructure environment. The live BDD scenarios read
-only configuration names from environment variables; authentication details
-remain in the external OpenStack configuration.
+Ordinary deployment and resource identities—such as project, image, flavor,
+network, and expected product values—are supplied through runtime configuration
+or environment variables. Authentication remains external in OpenStack and SSH
+configuration. As deliberate safety boundaries for the controlled assessment
+environment, the corporate read-only cloud alias and approved bastion identity
+are allowlisted in code; those restrictions are not authentication data.
 
 ## Scope
 
