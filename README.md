@@ -37,8 +37,9 @@ The repository currently provides:
 - `Environment` and `WorkflowRunResult` models for deployment metadata,
   functional outcomes, durations, and failure context.
 - The `vm.lifecycle` workflow for one-server provisioning and cleanup.
-- One consumer-facing `pytest-bdd` scenario that exercises the complete VM
-  lifecycle against an explicitly enabled live OpenStack environment.
+- Two consumer-facing `pytest-bdd` scenarios that verify a consumer can:
+  - Provision and remove a virtual machine.
+  - Provision a workload with an address on the requested network.
 - Unit tests that mock the SDK boundary and do not require a live cloud.
 
 ### VM Lifecycle
@@ -62,6 +63,14 @@ when a usable server identifier exists, and cleanup failures are also reported
 as failures. When both primary and cleanup failures occur, their contexts are
 retained in the result.
 
+### Network Attachment
+
+The network scenario extends the VM lifecycle with focused attachment checks.
+While the VM is active, the workflow verifies that a port associated with its
+exact server ID belongs to the requested network and has a fixed IP. After the
+VM is deleted, it confirms that the same automatically managed port also
+disappears.
+
 ## Installation
 
 The project requires Python 3.11 or newer. Create a virtual environment and
@@ -84,8 +93,8 @@ This normal test command excludes tests marked `integration`, so it does not
 create resources in a live OpenStack environment. The unit tests use mocks and
 do not require OpenStack credentials.
 
-To run the live BDD VM lifecycle scenario, explicitly select integration tests
-and opt in to live access:
+To run the live BDD scenarios, explicitly select integration tests and opt in
+to live access:
 
 ```bash
 OPENSTACK_PERF_RUN_LIVE=1 \
@@ -103,7 +112,8 @@ resource IDs before calling the existing VM lifecycle workflow.
 
 Test-created servers use an `openstack-perf-bdd-` name prefix for clear
 ownership. Cleanup targets only the exact server created by the workflow; the
-suite does not perform broad name-based cleanup.
+suite does not perform broad name-based cleanup. Automatically managed Neutron
+ports are observed for deletion but are never manually deleted by the suite.
 
 ## OpenStack Configuration
 
@@ -113,7 +123,7 @@ configuration supported by `openstacksdk`; credential values must never be
 committed to this repository.
 
 The application code does not hard-code a particular cloud, project, image,
-flavor, network, or infrastructure environment. The live BDD scenario reads
+flavor, network, or infrastructure environment. The live BDD scenarios read
 only configuration names from environment variables; authentication details
 remain in the external OpenStack configuration.
 
