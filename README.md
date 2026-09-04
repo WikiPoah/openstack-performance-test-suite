@@ -18,6 +18,28 @@ The central release question is: **Does the candidate release still work
 correctly, and has its performance meaningfully regressed relative to an
 approved baseline?**
 
+## Validated Regression Example
+
+The suite was validated against a controlled OpenStack-backed application
+environment using a known-good Release 1.0 baseline and a changed Release 2.1
+candidate. Both runs used the same suite commit and regression configuration.
+
+The Release 1.0 baseline passed all configured observations. Against Release
+2.1, the suite detected both functional failures and a performance regression
+in a consumer page-delivery workflow that remained functionally available.
+
+For `product.page_delivery / static.home`, p50 increased from 0.014 s to
+0.281 s and p95 from 0.038 s to 0.324 s. The configured baseline-relative
+comparison therefore reported `PERFORMANCE_REGRESSION`.
+
+This demonstrates the intended distinction between availability and
+performance: a workflow can continue to return successfully while becoming
+materially slower for the consumer.
+
+Full methodology, historical experiments, run identifiers, artifact checksums,
+and interpretation are recorded in
+[Controlled benchmark evidence](docs/benchmark-results.md).
+
 ## Engineering Choices
 
 The implementation keeps its tooling proportional to that release-regression
@@ -81,8 +103,9 @@ The repository currently provides:
   exact network attachment.
 - Read-only product checks for the supported WordPress, static-site, nginx,
   Tomcat, and backend-listener contracts.
-- A bounded page-delivery observation for the WordPress home page and its
-  directly referenced same-origin stylesheets, scripts, and images.
+- Bounded page-delivery observations for six approved consumer-facing pages,
+  measuring each primary HTML document together with its directly referenced
+  same-origin stylesheets, scripts, and images.
 - Immutable regression observations, deterministic p50/p95 statistics,
   schema-versioned JSON artifacts, and configurable baseline comparison.
 - A TOML-configured regression runner and command-line interface that assemble
