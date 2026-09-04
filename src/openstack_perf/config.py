@@ -100,6 +100,7 @@ class ScenarioSet:
     boot_image: ScenarioConfig
     infrastructure_state: ScenarioConfig
     web_application: ScenarioConfig
+    page_delivery: ScenarioConfig
     application_services: ScenarioConfig
     vm_lifecycle: VmScenarioConfig
 
@@ -155,6 +156,7 @@ def _parse_config(document) -> RuntimeConfig:
             scenarios.boot_image,
             scenarios.infrastructure_state,
             scenarios.web_application,
+            scenarios.page_delivery,
             scenarios.application_services,
             scenarios.vm_lifecycle,
         )
@@ -164,6 +166,7 @@ def _parse_config(document) -> RuntimeConfig:
     needs_corp = scenarios.infrastructure_state.enabled
     needs_product = (
         scenarios.web_application.enabled
+        or scenarios.page_delivery.enabled
         or scenarios.application_services.enabled
     )
     consumer = _optional_section(root, "consumer", _parse_consumer, True)
@@ -370,6 +373,7 @@ def _parse_scenarios(data):
         "boot_image",
         "infrastructure_state",
         "web_application",
+        "page_delivery",
         "application_services",
         "vm_lifecycle",
     }
@@ -382,6 +386,7 @@ def _parse_scenarios(data):
         boot_image=_parse_sampled_scenario(data["boot_image"], "boot_image"),
         infrastructure_state=_parse_basic_scenario(data["infrastructure_state"], "infrastructure_state"),
         web_application=_parse_sampled_scenario(data["web_application"], "web_application"),
+        page_delivery=_parse_sampled_scenario(data["page_delivery"], "page_delivery"),
         application_services=_parse_sampled_scenario(data["application_services"], "application_services"),
         vm_lifecycle=_parse_vm_scenario(data["vm_lifecycle"]),
     )
@@ -485,6 +490,10 @@ def _expected_comparison_modes(config):
         add((("infrastructure.server_attachment", corp.server),), config.scenarios.infrastructure_state)
     if product:
         add(
+            (("product.page_delivery", "wordpress.home"),),
+            config.scenarios.page_delivery,
+        )
+        add(
             tuple(("product.wordpress", target) for target in (
                 "wordpress.home", "wordpress.search.release", "wordpress.rest.posts", "wordpress.login"
             ))
@@ -548,6 +557,11 @@ def _expected_sample_limits(config):
             )),
         )
         add(web_targets, config.scenarios.web_application.samples)
+    if product and config.scenarios.page_delivery.enabled:
+        add(
+            (("product.page_delivery", "wordpress.home"),),
+            config.scenarios.page_delivery.samples,
+        )
     if product and config.scenarios.application_services.enabled:
         add(
             tuple(

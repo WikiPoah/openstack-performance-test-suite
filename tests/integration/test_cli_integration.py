@@ -55,6 +55,10 @@ comparison_mode = "functional_only"
 enabled = false
 comparison_mode = "functional_only"
 samples = 1
+[scenarios.page_delivery]
+enabled = false
+comparison_mode = "performance"
+samples = 1
 [scenarios.application_services]
 enabled = false
 comparison_mode = "functional_only"

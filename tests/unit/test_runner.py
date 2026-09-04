@@ -108,6 +108,7 @@ def _runner_patches(events=None, workflow=None):
             "static.team", "static.contact",
         )
     )
+    page_delivery = _observation("product.page_delivery", "wordpress.home")
     services = tuple(
         _observation("product.service_http", target)
         for target in (
@@ -155,6 +156,10 @@ def _runner_patches(events=None, workflow=None):
             side_effect=record("web", web),
         ),
         patch(
+            "openstack_perf.runner.observe_page_delivery",
+            side_effect=record("page-delivery", page_delivery),
+        ),
+        patch(
             "openstack_perf.runner.observe_service_http_endpoints",
             side_effect=record("http-services", services),
         ),
@@ -199,7 +204,11 @@ def test_dual_gate_precedes_every_external_action(tmp_path, live, environ):
     config = load_config(EXAMPLE)
     with patch("openstack_perf.runner.create_connection") as connection, patch(
         "openstack_perf.runner.observe_corporate_web_application"
-    ) as http, patch("openstack_perf.runner.observe_backend_reachability") as ssh:
+    ) as http, patch(
+        "openstack_perf.runner.observe_page_delivery"
+    ) as page_delivery, patch(
+        "openstack_perf.runner.observe_backend_reachability"
+    ) as ssh:
         with pytest.raises(LiveAuthorizationError):
             run_regression(
                 config,
@@ -210,6 +219,7 @@ def test_dual_gate_precedes_every_external_action(tmp_path, live, environ):
             )
     connection.assert_not_called()
     http.assert_not_called()
+    page_delivery.assert_not_called()
     ssh.assert_not_called()
 
 
@@ -256,7 +266,8 @@ def test_runner_uses_deterministic_read_only_first_vm_last_order(tmp_path):
     outcome = _run_with_patches(tmp_path, config, patches)
 
     assert events == [
-        "service", "image", "corp", "web", "http-services", "backends",
+        "service", "image", "corp", "web", "page-delivery",
+        "http-services", "backends",
         "vm", "vm", "vm",
     ]
     assert connections.call_args_list == [
@@ -520,6 +531,7 @@ def test_disabled_scenarios_are_not_invoked(tmp_path):
                 config.scenarios.infrastructure_state, enabled=False
             ),
             web_application=replace(config.scenarios.web_application, enabled=False),
+            page_delivery=replace(config.scenarios.page_delivery, enabled=False),
             application_services=replace(
                 config.scenarios.application_services, enabled=False
             ),

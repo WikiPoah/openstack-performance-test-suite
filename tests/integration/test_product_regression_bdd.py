@@ -12,6 +12,7 @@ from openstack_perf.backend_reachability import (
 )
 from openstack_perf.product_http import (
     observe_corporate_web_application,
+    observe_page_delivery,
     observe_service_http_endpoints,
 )
 from openstack_perf.results import FunctionalVerdict
@@ -64,6 +65,19 @@ def check_web_application(web_application_context):
 @then("the corporate web application should remain usable")
 def web_application_is_usable(web_application_observations):
     _assert_observations_pass(web_application_observations)
+
+
+@when(
+    "the consumer retrieves the application home page and its required resources",
+    target_fixture="page_delivery_observation",
+)
+def retrieve_application_home_page(web_application_context):
+    return observe_page_delivery(web_application_context["base_url"])
+
+
+@then("the page delivery should remain functionally valid")
+def page_delivery_is_valid(page_delivery_observation):
+    _assert_observations_pass((page_delivery_observation,))
 
 
 @given(

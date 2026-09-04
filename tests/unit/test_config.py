@@ -27,6 +27,7 @@ def test_example_configuration_is_complete_and_maps_policies():
     assert config.consumer.cloud == "devstack-perf"
     assert config.corp.cloud == "devstack-corp-ro"
     assert config.product.backends[0].target_id == "backend.mariadb"
+    assert config.scenarios.page_delivery.samples == 10
     assert config.scenarios.vm_lifecycle.samples == 3
     assert [item.metric for item in config.comparison_policies[0].tolerances] == [
         Metric.P50,
@@ -35,6 +36,19 @@ def test_example_configuration_is_complete_and_maps_policies():
     assert ("infrastructure.server_attachment", "corp-db") in (
         config.functional_only_keys
     )
+    assert ("product.page_delivery", "wordpress.home") not in (
+        config.functional_only_keys
+    )
+    assert len(config.functional_only_keys) == 18
+    page_policy = next(
+        policy
+        for policy in config.comparison_policies
+        if policy.scenario_id == "product.page_delivery"
+    )
+    assert page_policy.target_id == "wordpress.home"
+    assert page_policy.minimum_sample_count == 10
+    assert [item.relative for item in page_policy.tolerances] == [0.50, 0.50]
+    assert [item.absolute_seconds for item in page_policy.tolerances] == [0.25, 0.50]
 
 
 def test_config_validation_performs_no_external_activity():
@@ -104,6 +118,17 @@ def test_performance_scenario_requires_policy(tmp_path):
 
     with pytest.raises(ConfigurationError, match="disabled or unknown"):
         _load_text(tmp_path, text)
+
+
+def test_page_delivery_performance_scenario_requires_policy(tmp_path):
+    text = _example_text()
+    start = text.index(
+        '[[comparison.policies]]\nscenario_id = "product.page_delivery"'
+    )
+    end = text.index('[[comparison.policies]]', start + 1)
+
+    with pytest.raises(ConfigurationError, match="require comparison policies"):
+        _load_text(tmp_path, text[:start] + text[end:])
 
 
 def test_functional_only_scenario_rejects_performance_policy(tmp_path):

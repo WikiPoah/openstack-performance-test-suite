@@ -73,6 +73,11 @@ enabled = true
 comparison_mode = "functional_only"
 samples = 10
 
+[scenarios.page_delivery]
+enabled = true
+comparison_mode = "performance"
+samples = 10
+
 [scenarios.application_services]
 enabled = true
 comparison_mode = "functional_only"
@@ -103,6 +108,15 @@ p50_relative = 0.20
 p50_absolute_seconds = 0.05
 p95_relative = 0.25
 p95_absolute_seconds = 0.10
+
+[[comparison.policies]]
+scenario_id = "product.page_delivery"
+target_id = "wordpress.home"
+minimum_sample_count = 10
+p50_relative = 0.50
+p50_absolute_seconds = 0.25
+p95_relative = 0.50
+p95_absolute_seconds = 0.50
 
 [[comparison.policies]]
 scenario_id = "vm.network_attachment_lifecycle"
