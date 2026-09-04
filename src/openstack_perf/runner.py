@@ -170,13 +170,18 @@ def run_regression(
             )
         )
     if config.scenarios.page_delivery.enabled:
-        observations.append(
+        observations.extend(
             observe_page_delivery(
                 product.base_url,
+                target_id=target.target_id,
+                path=target.path,
+                name=target.name,
+                maximum_resources=target.maximum_resources,
                 sample_count=config.scenarios.page_delivery.samples,
                 timeout_seconds=product.http_timeout_seconds,
                 maximum_body_bytes=product.maximum_body_bytes,
             )
+            for target in product.page_delivery_targets
         )
     if config.scenarios.application_services.enabled:
         observations.extend(

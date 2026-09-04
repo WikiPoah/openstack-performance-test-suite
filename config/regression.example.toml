@@ -30,6 +30,42 @@ bastion = "wiki@172.24.4.20"
 http_timeout_seconds = 10
 maximum_body_bytes = 2097152
 
+[[product.page_delivery_targets]]
+target_id = "wordpress.home"
+path = "/"
+name = "WordPress home page delivery"
+maximum_resources = 32
+
+[[product.page_delivery_targets]]
+target_id = "static.home"
+path = "/site/"
+name = "Static site home page delivery"
+maximum_resources = 64
+
+[[product.page_delivery_targets]]
+target_id = "static.about"
+path = "/site/about.html"
+name = "Static site about page delivery"
+maximum_resources = 64
+
+[[product.page_delivery_targets]]
+target_id = "static.products"
+path = "/site/products.html"
+name = "Static site products page delivery"
+maximum_resources = 64
+
+[[product.page_delivery_targets]]
+target_id = "static.team"
+path = "/site/team.html"
+name = "Static site team page delivery"
+maximum_resources = 64
+
+[[product.page_delivery_targets]]
+target_id = "static.contact"
+path = "/site/contact.html"
+name = "Static site contact page delivery"
+maximum_resources = 64
+
 [[product.backends]]
 target_id = "backend.mariadb"
 name = "MariaDB listener"
@@ -112,6 +148,51 @@ p95_absolute_seconds = 0.10
 [[comparison.policies]]
 scenario_id = "product.page_delivery"
 target_id = "wordpress.home"
+minimum_sample_count = 10
+p50_relative = 0.50
+p50_absolute_seconds = 0.25
+p95_relative = 0.50
+p95_absolute_seconds = 0.50
+
+[[comparison.policies]]
+scenario_id = "product.page_delivery"
+target_id = "static.home"
+minimum_sample_count = 10
+p50_relative = 0.50
+p50_absolute_seconds = 0.25
+p95_relative = 0.50
+p95_absolute_seconds = 0.50
+
+[[comparison.policies]]
+scenario_id = "product.page_delivery"
+target_id = "static.about"
+minimum_sample_count = 10
+p50_relative = 0.50
+p50_absolute_seconds = 0.25
+p95_relative = 0.50
+p95_absolute_seconds = 0.50
+
+[[comparison.policies]]
+scenario_id = "product.page_delivery"
+target_id = "static.products"
+minimum_sample_count = 10
+p50_relative = 0.50
+p50_absolute_seconds = 0.25
+p95_relative = 0.50
+p95_absolute_seconds = 0.50
+
+[[comparison.policies]]
+scenario_id = "product.page_delivery"
+target_id = "static.team"
+minimum_sample_count = 10
+p50_relative = 0.50
+p50_absolute_seconds = 0.25
+p95_relative = 0.50
+p95_absolute_seconds = 0.50
+
+[[comparison.policies]]
+scenario_id = "product.page_delivery"
+target_id = "static.contact"
 minimum_sample_count = 10
 p50_relative = 0.50
 p50_absolute_seconds = 0.25

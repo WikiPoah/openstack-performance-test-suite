@@ -448,11 +448,13 @@ def test_functional_only_candidate_failure_dominates():
     assert comparison.verdict is OverallVerdict.FUNCTIONAL_FAILURE
 
 
-def _page_delivery_observation(value, *, verdict=FunctionalVerdict.PASS):
+def _page_delivery_observation(
+    value, *, target_id="wordpress.home", verdict=FunctionalVerdict.PASS
+):
     return _observation(
         scenario_id="product.page_delivery",
-        target_id="wordpress.home",
-        name="WordPress home page delivery",
+        target_id=target_id,
+        name=f"{target_id} page delivery",
         verdict=verdict,
         count=10,
         p50=value,
@@ -460,12 +462,15 @@ def _page_delivery_observation(value, *, verdict=FunctionalVerdict.PASS):
     )
 
 
-def _page_delivery_policy():
+def _page_delivery_policy(target_id="wordpress.home"):
     return ComparisonPolicy(
         "product.page_delivery",
-        "wordpress.home",
+        target_id,
         10,
-        (MetricTolerance(Metric.P50, relative=0.50, absolute_seconds=0.25),),
+        (
+            MetricTolerance(Metric.P50, relative=0.50, absolute_seconds=0.25),
+            MetricTolerance(Metric.P95, relative=0.50, absolute_seconds=0.50),
+        ),
     )
 
 
@@ -527,6 +532,91 @@ def test_page_delivery_missing_baseline_is_insufficient_evidence():
         if item.scenario_id == "product.page_delivery"
     )
     assert page.performance_verdict is PerformanceVerdict.INSUFFICIENT_EVIDENCE
+
+
+@pytest.mark.parametrize(
+    "target_id",
+    [
+        "static.home",
+        "static.about",
+        "static.products",
+        "static.team",
+        "static.contact",
+    ],
+)
+@pytest.mark.parametrize(
+    "candidate_value,expected",
+    [
+        (1.5, PerformanceVerdict.PASS),
+        (1.500001, PerformanceVerdict.REGRESSION),
+        (0.8, PerformanceVerdict.PASS),
+    ],
+)
+def test_static_page_delivery_keys_use_existing_comparison_boundaries(
+    target_id, candidate_value, expected
+):
+    comparison = compare_runs(
+        _run(
+            RunRole.BASELINE,
+            "baseline",
+            [_page_delivery_observation(1.0, target_id=target_id)],
+        ),
+        _run(
+            RunRole.CANDIDATE,
+            "candidate",
+            [_page_delivery_observation(candidate_value, target_id=target_id)],
+        ),
+        (_page_delivery_policy(target_id),),
+    )
+
+    assert comparison.observations[0].performance_verdict is expected
+
+
+def test_static_page_delivery_missing_baseline_is_insufficient_evidence():
+    target_id = "static.products"
+    comparison = compare_runs(
+        _run(RunRole.BASELINE, "baseline", [_observation()]),
+        _run(
+            RunRole.CANDIDATE,
+            "candidate",
+            [_page_delivery_observation(1.0, target_id=target_id)],
+        ),
+        (_page_delivery_policy(target_id),),
+    )
+
+    page = next(
+        item for item in comparison.observations
+        if item.scenario_id == "product.page_delivery"
+    )
+    assert page.performance_verdict is PerformanceVerdict.INSUFFICIENT_EVIDENCE
+
+
+def test_static_page_delivery_functional_failure_dominates_performance():
+    target_id = "static.products"
+    comparison = compare_runs(
+        _run(
+            RunRole.BASELINE,
+            "baseline",
+            [_page_delivery_observation(1.0, target_id=target_id)],
+        ),
+        _run(
+            RunRole.CANDIDATE,
+            "candidate",
+            [
+                _page_delivery_observation(
+                    1.0,
+                    target_id=target_id,
+                    verdict=FunctionalVerdict.FAILURE,
+                )
+            ],
+        ),
+        (_page_delivery_policy(target_id),),
+    )
+
+    assert comparison.verdict is OverallVerdict.FUNCTIONAL_FAILURE
+    assert comparison.observations[0].performance_verdict is (
+        PerformanceVerdict.NOT_EVALUATED
+    )
 
 
 def test_functional_only_missing_or_invalid_baseline_is_insufficient():

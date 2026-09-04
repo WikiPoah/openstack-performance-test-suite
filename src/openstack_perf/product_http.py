@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 import json
 import math
+import re
 import time
 from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -21,6 +22,7 @@ DEFAULT_SAMPLE_COUNT = 10
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_PAGE_RESOURCES = 32
+MAX_PAGE_RESOURCE_LIMIT = 64
 MAX_PAGE_DELIVERY_BYTES = 16 * 1024 * 1024
 
 
@@ -270,21 +272,33 @@ def observe_service_http_endpoints(
 def observe_page_delivery(
     frontend_base_url: str,
     *,
+    target_id: str = "wordpress.home",
+    path: str = "/",
+    name: str = "WordPress home page delivery",
+    maximum_resources: int = MAX_PAGE_RESOURCES,
     sample_count: int = DEFAULT_SAMPLE_COUNT,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     maximum_body_bytes: int = MAX_RESPONSE_BYTES,
     opener=None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> ScenarioObservation:
-    """Observe delivery of the WordPress home page and direct resources."""
+    """Observe delivery of one configured page and its direct resources."""
+    if not isinstance(target_id, str) or not re.fullmatch(
+        r"[a-z][a-z0-9_.-]*", target_id
+    ):
+        raise ValueError("target_id must be a stable lowercase ID")
+    path = _validated_page_path(path)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be non-empty")
+    _require_page_resource_limit(maximum_resources)
     _require_positive_integer(sample_count, "sample_count")
     _require_http_timeout(timeout_seconds)
     _require_body_limit(maximum_body_bytes)
-    page_url = _target_url(_validated_base_url(frontend_base_url), "/")
+    page_url = _target_url(_validated_base_url(frontend_base_url), path)
     target = _HttpTarget(
         "product.page_delivery",
-        "wordpress.home",
-        "WordPress home page delivery",
+        target_id,
+        name,
         page_url,
         {},
     )
@@ -307,7 +321,9 @@ def observe_page_delivery(
             content_type,
             require_html=True,
         )
-        resources = _extract_page_resources(body, final_url)
+        resources = _extract_page_resources(
+            body, final_url, maximum_resources
+        )
         approved_urls = (page_url, *resources)
         client = opener
         total_bytes = len(body)
@@ -334,7 +350,7 @@ def observe_page_delivery(
             target,
             (),
             aggregate,
-            product_failure_message("wordpress.home page delivery warm-up", exc),
+            product_failure_message(f"{target_id} page delivery warm-up", exc),
         )
 
     samples = []
@@ -353,7 +369,7 @@ def observe_page_delivery(
         except Exception as exc:
             aggregate["delivery"] = False
             error = product_failure_message(
-                "wordpress.home page delivery request", exc
+                f"{target_id} page delivery request", exc
             )
             samples.append(
                 TimingSample(sequence, _failure_duration(exc), False, error)
@@ -399,7 +415,9 @@ def _extract_page_resources(
             _url_key(normalized, reject_credentials=True), normalized
         )
     if len(resources) > maximum_resources:
-        raise ProductValidationError("page resource manifest exceeded 32 resources")
+        raise ProductValidationError(
+            f"page resource manifest exceeded {maximum_resources} resources"
+        )
     return tuple(resources[key] for key in sorted(resources))
 
 
@@ -704,6 +722,27 @@ def _validated_base_url(value):
     return value.rstrip("/") + "/"
 
 
+def _validated_page_path(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("page path must be non-empty")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or not value.startswith("/")
+        or value.startswith("//")
+        or "//" in value
+        or "\\" in value
+        or "%" in value
+        or any(character.isspace() or ord(character) < 32 for character in value)
+        or any(segment in {".", ".."} for segment in parsed.path.split("/"))
+    ):
+        raise ValueError("page path must be a safe absolute-path reference")
+    return value
+
+
 def _target_url(base_url, path):
     relative_path = (
         path.lstrip("/")
@@ -765,3 +804,9 @@ def _require_body_limit(value):
         raise ValueError(
             "maximum_body_bytes must be between 1 and 2097152"
         )
+
+
+def _require_page_resource_limit(value):
+    _require_positive_integer(value, "maximum_resources")
+    if value > MAX_PAGE_RESOURCE_LIMIT:
+        raise ValueError("maximum_resources must be at most 64")

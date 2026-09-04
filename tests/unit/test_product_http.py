@@ -280,6 +280,152 @@ def test_page_resource_manifest_allows_32_and_rejects_33():
         _extract_page_resources(excessive, "http://product.test/")
 
 
+def test_page_resource_manifest_allows_configured_64_resource_bound():
+    exact = b"".join(
+        f'<img src="/{index}.png">'.encode() for index in range(64)
+    )
+
+    assert len(_extract_page_resources(exact, "http://product.test/", 64)) == 64
+    with pytest.raises(ProductValidationError, match="exceeded 64"):
+        _extract_page_resources(
+            exact + b'<img src="/extra.png">',
+            "http://product.test/",
+            64,
+        )
+
+
+def test_page_delivery_uses_configured_path_identity_and_name():
+    page = "http://product.test/site/products.html"
+    opener = _RoutingOpener({page: b"<p>Products</p>"})
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        target_id="static.products",
+        path="/site/products.html",
+        name="Static site products page delivery",
+        sample_count=1,
+        opener=opener,
+        clock=_clock(),
+    )
+
+    assert observation.scenario_id == "product.page_delivery"
+    assert observation.target_id == "static.products"
+    assert observation.name == "Static site products page delivery"
+    assert [call[0].full_url for call in opener.calls] == [page, page]
+
+
+def test_40_image_page_delivery_succeeds_with_64_resource_limit():
+    page = "http://product.test/site/products.html"
+    body = b"".join(
+        f'<img src="/assets/{index}.png">'.encode() for index in range(40)
+    )
+    routes = {page: body}
+    routes.update(
+        {
+            f"http://product.test/assets/{index}.png": b"image"
+            for index in range(40)
+        }
+    )
+    opener = _RoutingOpener(routes)
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        target_id="static.products",
+        path="/site/products.html",
+        name="Static site products page delivery",
+        maximum_resources=64,
+        sample_count=1,
+        opener=opener,
+        clock=_clock(100),
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+    assert observation.statistics.sample_count == 1
+    assert len(opener.calls) == 41 * 2
+
+
+def test_page_delivery_does_not_discover_resources_recursively():
+    page = "http://product.test/site/products.html"
+    stylesheet = "http://product.test/assets/site.css"
+    nested = "http://product.test/assets/nested.png"
+    opener = _RoutingOpener(
+        {
+            page: b'<link rel="stylesheet" href="/assets/site.css">',
+            stylesheet: b'<img src="/assets/nested.png">',
+        }
+    )
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        target_id="static.products",
+        path="/site/products.html",
+        name="Static site products page delivery",
+        maximum_resources=64,
+        sample_count=1,
+        opener=opener,
+        clock=_clock(),
+    )
+
+    assert observation.functional_verdict is FunctionalVerdict.PASS
+    assert nested not in [call[0].full_url for call in opener.calls]
+
+
+def test_page_delivery_targets_enforce_independent_resource_limits():
+    body = b"".join(f'<img src="/{index}.png">'.encode() for index in range(40))
+    routes = {"http://product.test/": body}
+    routes.update(
+        {f"http://product.test/{index}.png": b"image" for index in range(40)}
+    )
+
+    bounded = observe_page_delivery(
+        "http://product.test",
+        sample_count=1,
+        maximum_resources=32,
+        opener=_RoutingOpener(dict(routes)),
+        clock=_clock(100),
+    )
+    expanded = observe_page_delivery(
+        "http://product.test",
+        sample_count=1,
+        maximum_resources=64,
+        opener=_RoutingOpener(dict(routes)),
+        clock=_clock(100),
+    )
+
+    assert bounded.functional_verdict is FunctionalVerdict.FAILURE
+    assert "exceeded 32" in bounded.error_message
+    assert expanded.functional_verdict is FunctionalVerdict.PASS
+
+
+@pytest.mark.parametrize("resource_count,passes", [(3, True), (4, False)])
+def test_page_delivery_enforces_exact_configured_resource_boundary(
+    resource_count, passes
+):
+    body = b"".join(
+        f'<img src="/assets/{index}.png">'.encode()
+        for index in range(resource_count)
+    )
+    routes = {"http://product.test/": body}
+    routes.update(
+        {
+            f"http://product.test/assets/{index}.png": b"image"
+            for index in range(resource_count)
+        }
+    )
+
+    observation = observe_page_delivery(
+        "http://product.test",
+        maximum_resources=3,
+        sample_count=1,
+        opener=_RoutingOpener(routes),
+        clock=_clock(),
+    )
+
+    assert (observation.functional_verdict is FunctionalVerdict.PASS) is passes
+    if not passes:
+        assert "exceeded 3" in observation.error_message
+
+
 def test_page_delivery_uses_one_warmup_and_ten_timed_full_deliveries():
     opener = _RoutingOpener(_page_routes())
 
@@ -1092,6 +1238,51 @@ def test_invalid_sample_count_is_rejected(sample_count):
             "http://product.test:8080",
             sample_count=sample_count,
             opener=_RoutingOpener(_service_routes()),
+        )
+
+
+@pytest.mark.parametrize("maximum_resources", [True, 0, -1, 1.5, 65])
+def test_invalid_page_delivery_resource_limit_is_rejected(maximum_resources):
+    with pytest.raises((TypeError, ValueError)):
+        observe_page_delivery(
+            "http://product.test",
+            maximum_resources=maximum_resources,
+            opener=SimpleNamespace(),
+        )
+
+
+@pytest.mark.parametrize("target_id", ["", "UPPER", "not stable", True])
+def test_invalid_page_delivery_target_identity_is_rejected(target_id):
+    with pytest.raises(ValueError, match="target_id"):
+        observe_page_delivery(
+            "http://product.test",
+            target_id=target_id,
+            opener=SimpleNamespace(),
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "site/",
+        "//outside.test/site/",
+        "http://outside.test/site/",
+        "http://user:password@outside.test/site/",
+        "/site/?query=true",
+        "/site/#fragment",
+        "/site/../other",
+        "/site/%zz",
+        "/site/%2e%2e/other",
+        "/site//other",
+    ],
+)
+def test_unsafe_page_delivery_paths_are_rejected(path):
+    with pytest.raises(ValueError, match="page path"):
+        observe_page_delivery(
+            "http://product.test",
+            path=path,
+            opener=SimpleNamespace(),
         )
 
 

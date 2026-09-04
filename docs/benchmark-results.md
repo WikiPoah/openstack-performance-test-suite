@@ -208,22 +208,90 @@ describes only the three observations that were performance-gated at the time;
 it is not evidence that the changed release contained no other performance
 regression.
 
-## Performance-coverage follow-up
+## First performance-coverage remediation
 
 The first candidate evidence remains part of the assessment record because it
 demonstrated both successful functional detection and a concrete limitation in
-the original measurement surface. The suite is being extended with a bounded
+the original measurement surface. The suite was extended with a bounded
 `product.page_delivery / wordpress.home` observation that measures the primary
 HTML response together with directly referenced same-origin stylesheets,
 scripts, and images.
 
-Controlled proof of that improvement is still pending. The required sequence
-is:
+Its policy was fixed before controlled validation. The implementation then
+received a new matching Release 1.0 baseline and Release 2.1 candidate rather
+than being evaluated against an artifact that lacked the observation.
+
+## Second controlled experiment
+
+The second experiment used the exact same improved suite and configuration for
+both environments: branch commit
+`2c3c4104ede43bcccaf46a5f1efce04baf3e6dfd`, with package version `0.3.0`
+and configuration `devstack-release-regression`. It ran against OpenStack
+2026.1 in `RegionOne`, using the controlled writable `perf` project and
+read-only `corp` infrastructure checks. The application environment changed
+from known-good Release 1.0 to Release 2.1.
+
+| Role | Run ID | SHA-256 | Overall result |
+|---|---|---|---|
+| Release 1.0 baseline | `adb6a96c-2229-4e6e-9d5b-cb3babb23eec` | `e435180ccb454f1486918243cb66fcee586a99c7aea04bfd9e589c59f98443f3` | PASS |
+| Release 2.1 candidate | `a4789d5e-1bf6-4cad-bb33-b89c9b3fd920` | `e9ed1898e272ef7c974ce7cf7a0abfa68eceae741019a2dcfe5c167584fe3a30` | FUNCTIONAL_FAILURE |
+
+The corresponding artifact basenames are
+`devstack-release-regression-baseline-20260904T170756Z-adb6a96c-2229-4e6e-9d5b-cb3babb23eec.json`
+and
+`devstack-release-regression-candidate-20260904T172418Z-a4789d5e-1bf6-4cad-bb33-b89c9b3fd920.json`.
+Both remain preserved outside Git.
+
+The new observation produced:
+
+| Target | Release 1.0 p50 | Release 1.0 p95 | Release 2.1 p50 | Release 2.1 p95 | Performance |
+|---|---:|---:|---:|---:|---|
+| `product.page_delivery / wordpress.home` | 0.201 s | 0.256 s | 0.181 s | 0.229 s | PASS |
+
+That `PASS` is retained as the correct verdict for the measured target. The
+WordPress home page was measured correctly but remained lightweight and was
+not sufficiently representative of the broader consumer asset-delivery
+surface.
+
+The Release 2.1 candidate nevertheless failed seven functional observations:
+`static.home`, `static.products`, `static.team`, `static.contact`,
+`tomcat.home`, `tomcat.examples`, and `tomcat.hello_world`. Some static failures
+were intermittent across samples. Backend Tomcat reachability continued to
+pass while its consumer-facing HTTP endpoints failed, preserving the useful
+distinction between listener availability and application behavior. The three
+sequential VM lifecycle samples passed, including network verification and
+cleanup for every completed execution.
+
+Authoritative environment evidence separately confirmed that Release 2.1
+still contained the consumer-visible performance degradation. The home-page
+result therefore exposed a coverage-selection weakness, not a timing,
+statistics, artifact, or comparator defect.
+
+## Systematic page-delivery coverage
+
+The next remediation applies the same bounded page-delivery mechanism across
+the application's six already-approved HTML surfaces:
+
+- `wordpress.home`
+- `static.home`
+- `static.about`
+- `static.products`
+- `static.team`
+- `static.contact`
+
+This selection is derived from the existing consumer contract rather than a
+known affected asset URL. It retains GET-only direct-resource discovery,
+same-origin and exact-destination enforcement, a frozen manifest, sequential
+timing, and bounded response sizes. Static pages receive a bounded allowance of
+64 direct resources while the WordPress home-page limit remains 32.
+
+Controlled proof of this generalized coverage is still pending. The required
+sequence is:
 
 1. Complete non-live implementation review.
 2. Restore the known-good Release 1.0 environment.
-3. Capture and preserve a new baseline containing the page-delivery observation.
-4. Redeploy Release 2.0.
+3. Capture and preserve a new baseline containing all six page-delivery observations.
+4. Redeploy unchanged Release 2.1.
 5. Run one candidate with the exact same improved suite and configuration.
 6. Record the automatic comparison and whether it detects the previously
    missed performance regression.

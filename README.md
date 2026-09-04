@@ -156,12 +156,20 @@ and application release are supplied externally rather than inferred from
 page content. HTTP observations use one untimed warm-up followed by ten timed
 requests, limit responses to 2 MiB, and reject cross-origin redirects.
 
-The separate page-delivery observation freezes a deterministic manifest of up
-to 32 directly referenced same-origin stylesheets, scripts, and images during
-its warm-up. Each timed sample retrieves the primary HTML and that manifest
-sequentially, reporting the sum of their network/body-read durations. It does
-not execute JavaScript, render the page, or recursively crawl resources. Each
-response remains limited to 2 MiB and the full delivery to 16 MiB.
+The separate page-delivery observations cover the approved WordPress home page
+and five static HTML surfaces. Each freezes a deterministic manifest of directly
+referenced same-origin stylesheets, scripts, and images during its warm-up.
+The WordPress target permits up to 32 direct resources; the static targets
+permit up to 64. Each timed sample retrieves the primary HTML and its frozen
+manifest sequentially, reporting the sum of their network/body-read durations.
+This is a page-delivery proxy: it does not execute JavaScript, render the page,
+or recursively crawl resources. Each response remains limited to 2 MiB and
+each full delivery to 16 MiB.
+
+The TOML target collection is authoritative for complete runner coverage. The
+live BDD scenario remains a thin check of the same production mechanism through
+the representative WordPress home page rather than maintaining a second target
+list.
 
 Backend availability is checked through the approved bastion using one
 non-interactive system SSH invocation. The fixed remote check only opens and
