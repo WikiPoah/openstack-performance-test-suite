@@ -134,15 +134,21 @@ python3 -m venv .venv
 
 ## Running Tests
 
-Run the current unit suite with:
+Run the unit suite with:
+
+```bash
+.venv/bin/python -m pytest tests/unit -q
+```
+
+Run the complete default non-live suite with:
 
 ```bash
 .venv/bin/python -m pytest -q
 ```
 
-This normal test command excludes tests marked `integration`, so it does not
-create resources in a live OpenStack environment. The unit tests use mocks and
-do not require OpenStack credentials.
+The default test configuration excludes tests marked `integration`, so this
+command does not create resources in a live OpenStack environment. The unit
+tests use mocks and do not require OpenStack credentials.
 
 To run the live BDD scenarios, explicitly select integration tests and opt in
 to live access:
@@ -179,10 +185,12 @@ inputs are supplied through `OPENSTACK_PERF_PRODUCT_BASE_URL`,
 approved `wiki@172.24.4.20` bastion. Product checks are read-only: they use
 HTTP `GET` and TCP connect-and-close operations only.
 
-Test-created servers use an `openstack-perf-bdd-` name prefix for clear
-ownership. Cleanup targets only the exact server created by the workflow; the
-suite does not perform broad name-based cleanup. Automatically managed Neutron
-ports are observed for deletion but are never manually deleted by the suite.
+BDD-created servers use an `openstack-perf-bdd-` name prefix, while runner-created
+servers use `openstack-perf-run-`, making suite ownership visible to operators.
+Cleanup remains based on the exact ID of the server created by the workflow;
+the suite does not perform broad name- or prefix-based cleanup. Automatically
+managed Neutron ports are observed for deletion but are never manually deleted
+by the suite.
 
 ## Running Release Regressions
 
@@ -237,12 +245,28 @@ Every external runner operation requires both `--live` and
 `OPENSTACK_PERF_RUN_LIVE=1`. Read-only observations execute first; the
 network-verifying VM lifecycle executes last, sequentially, and stops after
 its first failure. Artifacts use generated configuration/role/time/UUID names
-and are never intentionally overwritten. Candidate evidence is written before
-comparison and neither input artifact is modified.
+and are create-new-only: an existing result artifact is never overwritten.
+Candidate evidence is written before comparison and neither input artifact is
+modified.
 
 Comparison configuration explicitly marks observations as performance-gated
 or functional-only. Functional failures, performance regressions, and missing
-evidence remain distinct in the terminal summary. Process exit codes are:
+evidence remain distinct in the terminal summary. For each configured timing
+metric, the permitted increase is the larger of the relative and absolute
+allowances:
+
+```text
+allowed_delta = max(baseline × relative_tolerance, absolute_allowance)
+```
+
+A performance regression is reported only when the candidate increase exceeds
+that allowed delta. The p50 value is the median, representing typical successful
+timing, while p95 describes the slower end of the observed successful samples.
+The strength of either percentile depends on sample count; a small VM sample
+set is useful regression evidence but not a statistically strong tail-latency
+estimate.
+
+Process exit codes are:
 
 - `0`: pass
 - `1`: functional failure
@@ -261,12 +285,11 @@ flavor, network, or infrastructure environment. The live BDD scenarios read
 only configuration names from environment variables; authentication details
 remain in the external OpenStack configuration.
 
-## Roadmap
+## Scope
 
-Planned work, not current functionality, includes:
-
-- Broader BDD scenarios for consumer-facing regression workflows.
-- Repeated sampling and concurrency where they provide useful evidence.
+The suite provides repeated regression sampling for its supported consumer
+workflows. General-purpose load and stress testing, concurrency benchmarking,
+monitoring, and automated remediation are outside its current scope.
 
 ## Design Principles
 

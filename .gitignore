@@ -20,6 +20,10 @@ htmlcov/
 # Environment configuration files
 .env
 .env.local
+/regression.toml
+
+# Local regression result artifacts
+/results/
 
 # OpenStack credentials - avoid committing sensitive configuration
 clouds.yaml
