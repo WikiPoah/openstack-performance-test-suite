@@ -7,6 +7,7 @@ from openstack_perf.artifacts import (
     deserialize_run,
     read_run_artifact,
     serialize_run,
+    write_new_run_artifact,
     write_run_artifact,
 )
 from openstack_perf.results import (
@@ -147,6 +148,25 @@ def test_atomic_write_failure_preserves_destination_and_removes_temporary_file(
     assert list(tmp_path.iterdir()) == [destination]
 
 
+def test_create_new_atomic_write_never_replaces_destination_on_race(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "run.json"
+    existing = b"independent artifact"
+
+    def destination_appears(_source, target):
+        target.write_bytes(existing)
+        raise FileExistsError
+
+    monkeypatch.setattr("openstack_perf.artifacts.os.link", destination_appears)
+
+    with pytest.raises(ArtifactError, match="already exists"):
+        write_new_run_artifact(destination, _run())
+
+    assert destination.read_bytes() == existing
+    assert list(tmp_path.iterdir()) == [destination]
+
+
 @pytest.mark.parametrize("serialized", ["not JSON", "[]", "null"])
 def test_deserialization_rejects_malformed_json_document(serialized):
     with pytest.raises(ArtifactError):
@@ -221,3 +241,31 @@ def test_deserialization_rejects_invalid_numeric_field_cleanly():
 
     with pytest.raises(ArtifactError, match="must be int or float"):
         deserialize_run(json.dumps(document))
+
+
+def test_configuration_name_round_trips_deterministically():
+    run = _run()
+    metadata = RunMetadata(
+        run_id=run.metadata.run_id,
+        role=run.metadata.role,
+        started_at=run.metadata.started_at,
+        completed_at=run.metadata.completed_at,
+        clean_snapshot=run.metadata.clean_snapshot,
+        configuration_name="release-regression",
+    )
+    configured = RegressionRunResult(metadata, run.environment, run.observations)
+
+    first = serialize_run(configured)
+    restored = deserialize_run(first)
+
+    assert restored.metadata.configuration_name == "release-regression"
+    assert serialize_run(restored) == first
+
+
+def test_old_artifact_without_configuration_name_remains_readable():
+    document = json.loads(serialize_run(_run()))
+    del document["run"]["configuration_name"]
+
+    restored = deserialize_run(json.dumps(document))
+
+    assert restored.metadata.configuration_name is None

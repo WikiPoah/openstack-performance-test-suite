@@ -103,6 +103,7 @@ def compare_runs(
     baseline: RegressionRunResult,
     candidate: RegressionRunResult,
     policies: tuple[ComparisonPolicy, ...],
+    functional_only_keys: tuple[tuple[str, str], ...] = (),
 ) -> RunComparison:
     """Compare runs by stable scenario and target IDs."""
     if baseline.metadata.role is not RunRole.BASELINE:
@@ -123,15 +124,26 @@ def compare_runs(
     }
     if len(policies_by_key) != len(policies):
         raise ValueError("comparison policies must have unique stable IDs")
+    functional_only = set(functional_only_keys)
+    if len(functional_only) != len(functional_only_keys):
+        raise ValueError("functional-only keys must be unique")
+    if functional_only & set(policies_by_key):
+        raise ValueError(
+            "observation keys cannot be both performance and functional-only"
+        )
     comparisons = tuple(
         _compare_observation(
             key,
             baseline_by_key.get(key),
             candidate_by_key.get(key),
             policies_by_key.get(key),
+            key in functional_only,
         )
         for key in sorted(
-            set(baseline_by_key) | set(candidate_by_key) | set(policies_by_key)
+            set(baseline_by_key)
+            | set(candidate_by_key)
+            | set(policies_by_key)
+            | functional_only
         )
     )
 
@@ -175,6 +187,7 @@ def _compare_observation(
     baseline: ScenarioObservation | None,
     candidate: ScenarioObservation | None,
     policy: ComparisonPolicy | None,
+    functional_only: bool,
 ) -> ObservationComparison:
     scenario_id, target_id = key
     if candidate and candidate.functional_verdict is FunctionalVerdict.FAILURE:
@@ -206,6 +219,14 @@ def _compare_observation(
             functional_verdict=candidate.functional_verdict,
             performance_verdict=PerformanceVerdict.INSUFFICIENT_EVIDENCE,
             message="baseline has a functional failure",
+        )
+    if functional_only:
+        return ObservationComparison(
+            scenario_id=scenario_id,
+            target_id=target_id,
+            functional_verdict=candidate.functional_verdict,
+            performance_verdict=PerformanceVerdict.NOT_EVALUATED,
+            message="observation is configured as functional-only",
         )
     if policy is None:
         return ObservationComparison(

@@ -42,6 +42,7 @@ def serialize_run(run: RegressionRunResult) -> str:
             "started_at": run.metadata.started_at,
             "completed_at": run.metadata.completed_at,
             "clean_snapshot": run.metadata.clean_snapshot.value,
+            "configuration_name": run.metadata.configuration_name,
         },
         "environment": {
             "cloud": run.environment.cloud,
@@ -95,6 +96,9 @@ def deserialize_run(serialized: str) -> RegressionRunResult:
             clean_snapshot=CleanSnapshotStatus(
                 _value(run_data, "clean_snapshot", str)
             ),
+            configuration_name=_optional_missing_string(
+                run_data, "configuration_name"
+            ),
         )
         service_versions_data = _value(
             environment_data, "service_versions", list
@@ -147,6 +151,32 @@ def write_run_artifact(path: str | Path, run: RegressionRunResult) -> None:
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
         os.replace(temporary_path, destination)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def write_new_run_artifact(path: str | Path, run: RegressionRunResult) -> None:
+    """Atomically publish a new artifact without replacing an existing file."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(serialize_run(run))
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        try:
+            os.link(temporary_path, destination)
+        except FileExistsError:
+            raise ArtifactError(f"artifact already exists: {destination}") from None
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
@@ -287,6 +317,13 @@ def _optional_string(data: dict[str, Any], key: str) -> str | None:
     if key not in data:
         raise ArtifactError(f"missing required field: {key}")
     value = data[key]
+    if value is not None and not isinstance(value, str):
+        raise ArtifactError(f"field {key} must be string or null")
+    return value
+
+
+def _optional_missing_string(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
     if value is not None and not isinstance(value, str):
         raise ArtifactError(f"field {key} must be string or null")
     return value

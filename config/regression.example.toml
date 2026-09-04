@@ -1,0 +1,114 @@
+schema_version = 1
+name = "devstack-release-regression"
+
+[release]
+platform_release = "OpenStack 2026.1"
+source_branch = "stable/2026.1"
+application_release = "1.0"
+clean_snapshot = "unknown"
+
+[consumer]
+cloud = "devstack-perf"
+project = "perf"
+region = "RegionOne"
+image = "cirros-0.6.3-x86_64-disk"
+flavor = "m1.tiny"
+network = "perf-net"
+
+[corp]
+cloud = "devstack-corp-ro"
+project = "corp"
+server = "corp-db"
+network = "corp-back"
+fixed_ip = "10.20.1.10"
+
+[product]
+base_url = "http://172.24.4.10"
+tomcat_base_url = "http://172.24.4.10:8080"
+expected_release_title = "Release notes 1.0"
+bastion = "wiki@172.24.4.20"
+http_timeout_seconds = 10
+maximum_body_bytes = 2097152
+
+[[product.backends]]
+target_id = "backend.mariadb"
+name = "MariaDB listener"
+host = "10.20.1.10"
+port = 3306
+
+[[product.backends]]
+target_id = "backend.apache"
+name = "Apache listener"
+host = "10.20.1.20"
+port = 80
+
+[[product.backends]]
+target_id = "backend.tomcat"
+name = "Tomcat listener"
+host = "10.20.1.30"
+port = 8080
+
+[[product.backends]]
+target_id = "backend.nginx"
+name = "nginx listener"
+host = "10.20.1.40"
+port = 80
+
+[scenarios.service_discovery]
+enabled = true
+comparison_mode = "performance"
+samples = 10
+
+[scenarios.boot_image]
+enabled = true
+comparison_mode = "performance"
+samples = 10
+
+[scenarios.infrastructure_state]
+enabled = true
+comparison_mode = "functional_only"
+
+[scenarios.web_application]
+enabled = true
+comparison_mode = "functional_only"
+samples = 10
+
+[scenarios.application_services]
+enabled = true
+comparison_mode = "functional_only"
+samples = 10
+
+[scenarios.vm_lifecycle]
+enabled = true
+comparison_mode = "performance"
+samples = 3
+verify_network_attachment = true
+provisioning_timeout_seconds = 180
+cleanup_timeout_seconds = 120
+
+[[comparison.policies]]
+scenario_id = "identity.service_discovery"
+target_id = "perf"
+minimum_sample_count = 10
+p50_relative = 0.20
+p50_absolute_seconds = 0.05
+p95_relative = 0.25
+p95_absolute_seconds = 0.10
+
+[[comparison.policies]]
+scenario_id = "image.boot_discovery"
+target_id = "cirros-0.6.3-x86_64-disk"
+minimum_sample_count = 10
+p50_relative = 0.20
+p50_absolute_seconds = 0.05
+p95_relative = 0.25
+p95_absolute_seconds = 0.10
+
+[[comparison.policies]]
+scenario_id = "vm.network_attachment_lifecycle"
+target_id = "perf-net"
+minimum_sample_count = 3
+p50_relative = 0.20
+p50_absolute_seconds = 2.0
+p95_relative = 0.25
+p95_absolute_seconds = 3.0

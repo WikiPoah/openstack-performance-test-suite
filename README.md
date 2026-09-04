@@ -45,6 +45,8 @@ The repository currently provides:
   Tomcat, and backend-listener contracts.
 - Immutable regression observations, deterministic p50/p95 statistics,
   schema-versioned JSON artifacts, and configurable baseline comparison.
+- A TOML-configured regression runner and command-line interface that assemble
+  complete baseline or candidate artifacts from the existing checks.
 - Six consumer-facing `pytest-bdd` scenarios that verify a consumer can:
   - Provision and remove a virtual machine.
   - Provision a workload with an address on the requested network.
@@ -181,6 +183,71 @@ Test-created servers use an `openstack-perf-bdd-` name prefix for clear
 ownership. Cleanup targets only the exact server created by the workflow; the
 suite does not perform broad name-based cleanup. Automatically managed Neutron
 ports are observed for deletion but are never manually deleted by the suite.
+
+## Running Release Regressions
+
+Start from the checked-in non-secret example configuration:
+
+```bash
+cp config/regression.example.toml regression.toml
+```
+
+Review the resource names, expected product contract, release identity,
+scenario selection, sampling, and comparison policies for the target
+deployment. Credentials remain in external OpenStack and SSH configuration;
+they do not belong in TOML.
+
+Configuration can be validated without contacting any external system:
+
+```bash
+openstack-perf validate-config --config regression.toml
+```
+
+Establish a baseline against a known-good release:
+
+```bash
+OPENSTACK_PERF_RUN_LIVE=1 openstack-perf run \
+  --live \
+  --role baseline \
+  --config regression.toml \
+  --output-dir results/
+```
+
+Run a candidate and compare it with that immutable baseline:
+
+```bash
+OPENSTACK_PERF_RUN_LIVE=1 openstack-perf run \
+  --live \
+  --role candidate \
+  --config regression.toml \
+  --output-dir results/ \
+  --baseline results/devstack-release-regression-baseline-....json
+```
+
+Existing artifacts can also be compared entirely offline:
+
+```bash
+openstack-perf compare \
+  --config regression.toml \
+  --baseline results/baseline.json \
+  --candidate results/candidate.json
+```
+
+Every external runner operation requires both `--live` and
+`OPENSTACK_PERF_RUN_LIVE=1`. Read-only observations execute first; the
+network-verifying VM lifecycle executes last, sequentially, and stops after
+its first failure. Artifacts use generated configuration/role/time/UUID names
+and are never intentionally overwritten. Candidate evidence is written before
+comparison and neither input artifact is modified.
+
+Comparison configuration explicitly marks observations as performance-gated
+or functional-only. Functional failures, performance regressions, and missing
+evidence remain distinct in the terminal summary. Process exit codes are:
+
+- `0`: pass
+- `1`: functional failure
+- `2`: performance regression
+- `3`: configuration/artifact/execution error or insufficient evidence
 
 ## OpenStack Configuration
 
